@@ -3,9 +3,10 @@
 # Thin wrapper around deploy.sh. See deploy.sh for full docs.
 #
 # Usage:
-#   ./scripts/deploy-dev.sh              # Build + deploy
-#   ./scripts/deploy-dev.sh --skip-build # Deploy existing dist
+#   ./scripts/deploy-dev.sh              # Build + deploy + restart gateway
+#   ./scripts/deploy-dev.sh --skip-build # Deploy existing dist + restart
 #   ./scripts/deploy-dev.sh --backup     # Backup previous deploy first
+#   ./scripts/deploy-dev.sh --no-restart # Deploy without restarting
 #   ./scripts/deploy-dev.sh --dry-run    # Show what would be synced
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"

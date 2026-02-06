@@ -14,12 +14,10 @@
 #   --skip-build     Deploy existing dist without rebuilding
 #   --backup         Backup previous deployment first
 #   --dry-run        Show what would be synced without doing it
-#   --restart        Restart the gateway after deploying (bootout + sleep + bootstrap)
+#   --no-restart     Deploy without restarting the gateway (default: restart after deploy)
 #
-# Without --restart, restart the gateway manually after deploying:
-#   launchctl bootout gui/$(id -u)/<service-label>
-#   sleep 3
-#   launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/<plist-file>
+# To deploy without restarting (e.g., staging for later activation):
+#   ./scripts/deploy-prod.sh --no-restart
 
 set -euo pipefail
 
@@ -66,7 +64,7 @@ ENV_NAME="${DEPLOY_ENV:-}"
 SKIP_BUILD=false
 BACKUP=false
 DRY_RUN=false
-RESTART=false
+RESTART=true
 
 for arg in "$@"; do
   case "$arg" in
@@ -74,7 +72,7 @@ for arg in "$@"; do
     --skip-build) SKIP_BUILD=true ;;
     --backup)     BACKUP=true ;;
     --dry-run)    DRY_RUN=true ;;
-    --restart)    RESTART=true ;;
+    --no-restart) RESTART=false ;;
     --help|-h)
       head -20 "$0" | tail -18
       exit 0
