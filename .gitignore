@@ -75,3 +75,6 @@ USER.md
 memory/
 .agent/*.json
 !.agent/workflows/
+
+# External plugins (deployed via scripts, not tracked in fork)
+extensions/memory-beanstalk/
