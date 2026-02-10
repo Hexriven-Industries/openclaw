@@ -524,11 +524,15 @@ async function dispatchDiscordCommandInteraction(params: {
   };
 
   const useAccessGroups = cfg.commands?.useAccessGroups !== false;
-  const user = interaction.user;
+  const user = interaction.member?.user ?? interaction.user;
   if (!user) {
     return;
   }
-  const sender = resolveDiscordSenderIdentity({ author: user, pluralkitInfo: null });
+  const sender = resolveDiscordSenderIdentity({
+    author: user,
+    member: interaction.member,
+    pluralkitInfo: null,
+  });
   const channel = interaction.channel;
   const channelType = channel?.type;
   const isDirectMessage = channelType === ChannelType.DM;
