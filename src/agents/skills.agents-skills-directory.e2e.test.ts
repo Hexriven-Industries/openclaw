@@ -3,26 +3,22 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { buildWorkspaceSkillsPrompt } from "./skills.js";
+import { writeSkill } from "./skills.test-helpers.js";
 
-async function writeSkill(params: {
-  dir: string;
-  name: string;
-  description: string;
-  body?: string;
-}) {
-  const { dir, name, description, body } = params;
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(
-    path.join(dir, "SKILL.md"),
-    `---
-name: ${name}
-description: ${description}
----
+function buildSkillsPrompt(workspaceDir: string, managedDir: string, bundledDir: string): string {
+  return buildWorkspaceSkillsPrompt(workspaceDir, {
+    managedSkillsDir: managedDir,
+    bundledSkillsDir: bundledDir,
+  });
+}
 
-${body ?? `# ${name}\n`}
-`,
-    "utf-8",
-  );
+async function createWorkspaceSkillDirs() {
+  const workspaceDir = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-"));
+  return {
+    workspaceDir,
+    managedDir: path.join(workspaceDir, ".managed"),
+    bundledDir: path.join(workspaceDir, ".bundled"),
+  };
 }
 
 function buildSkillsPrompt(workspaceDir: string, managedDir: string, bundledDir: string): string {
