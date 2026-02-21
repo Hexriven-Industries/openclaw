@@ -27,7 +27,6 @@
       security: "allowlist",
       ask: "on-miss",
       safeBins: ["jq", "head", "tail", "wc"],
-      approvalRunningNoticeMs: 12000,
     },
   },
 }

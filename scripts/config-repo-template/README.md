@@ -15,6 +15,13 @@ state in per-environment state dirs (`~/.openclaw`, `~/.openclaw-dev`) untracked
 - `overrides/*.local.example.json5`: local-only override examples
 - `release-config-review-template.md`: release drift decision checklist
 
+## Validation intent
+
+- Template files in this folder are intended to be copy-paste valid for the
+  current OpenClaw config schema.
+- If a key here fails `openclaw` config validation, treat it as a template bug
+  and remove/fix it rather than assuming it is a conceptual-only example.
+
 ## Recommended runtime wiring
 
 - Prod:
