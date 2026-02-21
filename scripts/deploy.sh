@@ -45,6 +45,12 @@ resolve_env() {
 
 # ── Configuration ─────────────────────────────────────────────────────
 SOURCE_DIR="${OPENCLAW_SOURCE:-$HOME/Development/openclaw}"
+# Expected Dev config path for LaunchAgent verification.
+# Override if your dev config repo lives elsewhere.
+DEV_EXPECTED_CONFIG_PATH="${OPENCLAW_DEV_CONFIG_PATH:-$HOME/Deployments/openclaw-config/dev.json5}"
+PROD_EXPECTED_CONFIG_PATH="${OPENCLAW_PROD_CONFIG_PATH:-$HOME/Deployments/openclaw-config/prod.json5}"
+# Plutil binary path (override in tests/non-mac environments).
+PLUTIL_BIN="${PLUTIL_BIN:-/usr/bin/plutil}"
 
 # Runtime artifacts the gateway needs (and nothing else).
 # If upstream adds new runtime requirements, update this list.
@@ -95,10 +101,85 @@ info()  { echo "  → $*"; }
 warn()  { echo "  ⚠ $*" >&2; }
 die()   { echo "  ✖ $*" >&2; exit 1; }
 
+verify_dev_config_path() {
+  local plist_file="$1"
+  local expected_path="$2"
+  local actual_path
+
+  [ -f "$plist_file" ] || die "Dev plist not found: $plist_file"
+
+  # Read EnvironmentVariables.OPENCLAW_CONFIG_PATH from launchd plist.
+  # If missing or mismatched, fail fast before restart so we don't boot with
+  # the wrong config source.
+  actual_path=$("$PLUTIL_BIN" -extract EnvironmentVariables.OPENCLAW_CONFIG_PATH raw -o - "$plist_file" 2>/dev/null || true)
+
+  if [ -z "$actual_path" ]; then
+    die "Dev config-path verification failed: OPENCLAW_CONFIG_PATH is missing in $plist_file"
+  fi
+
+  local expected_abs actual_abs
+  expected_abs="$(cd "$(dirname "$expected_path")" && pwd)/$(basename "$expected_path")"
+  actual_abs="$(cd "$(dirname "$actual_path")" && pwd 2>/dev/null)/$(basename "$actual_path")"
+
+  if [ "$actual_abs" != "$expected_abs" ]; then
+    die "Dev config-path verification failed:
+  expected: $expected_abs
+  actual:   $actual_abs
+Fix the LaunchAgent EnvironmentVariables.OPENCLAW_CONFIG_PATH before deploying."
+  fi
+
+  info "Dev config-path verified ✓ ($actual_abs)"
+}
+
+verify_prod_config_path_info() {
+  local plist_file="$1"
+  local expected_path="$2"
+  local actual_path
+
+  if [ ! -f "$plist_file" ]; then
+    warn "Prod plist not found: $plist_file (skipping config-path info check)"
+    return
+  fi
+
+  actual_path=$("$PLUTIL_BIN" -extract EnvironmentVariables.OPENCLAW_CONFIG_PATH raw -o - "$plist_file" 2>/dev/null || true)
+  if [ -z "$actual_path" ]; then
+    warn "Prod config-path info: OPENCLAW_CONFIG_PATH is not set in $plist_file"
+    return
+  fi
+
+  local expected_abs actual_abs
+  expected_abs="$(cd "$(dirname "$expected_path")" && pwd)/$(basename "$expected_path")"
+  actual_abs="$(cd "$(dirname "$actual_path")" && pwd 2>/dev/null)/$(basename "$actual_path")"
+
+  if [ "$actual_abs" = "$expected_abs" ]; then
+    info "Prod config-path info ✓ ($actual_abs)"
+    return
+  fi
+
+  warn "Prod config-path info mismatch:
+  expected: $expected_abs
+  actual:   $actual_abs"
+}
+
 # ── Resolve environment ──────────────────────────────────────────────
 [ -n "$ENV_NAME" ] || die "No environment specified. Use --env prod|dev or call via wrapper script."
 
 resolve_env "$ENV_NAME"
+
+# Dev-only safety check: ensure launchd service points at the expected
+# config-repo path before we restart.
+if [ "$ENV_NAME" = "dev" ] && [ "$DRY_RUN" = false ]; then
+  info "Verifying dev LaunchAgent OPENCLAW_CONFIG_PATH..."
+  verify_dev_config_path "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
+  echo ""
+fi
+
+# Prod informational check: warn on mismatch, but do not block deploy.
+if [ "$ENV_NAME" = "prod" ] && [ "$DRY_RUN" = false ]; then
+  info "Checking prod LaunchAgent OPENCLAW_CONFIG_PATH (informational)..."
+  verify_prod_config_path_info "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
+  echo ""
+fi
 
 # ── Pre-flight checks ────────────────────────────────────────────────
 echo "╔══════════════════════════════════════╗"
