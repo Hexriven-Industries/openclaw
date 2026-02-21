@@ -15,6 +15,7 @@
 #   --backup         Backup previous deployment first
 #   --dry-run        Show what would be synced without doing it
 #   --no-restart     Deploy without restarting the gateway (default: restart after deploy)
+#   --allow-drift    Allow LaunchAgent config-path/content drift from tracked config
 #
 # To deploy without restarting (e.g., staging for later activation):
 #   ./scripts/deploy-prod.sh --no-restart
@@ -72,6 +73,7 @@ SKIP_BUILD=false
 BACKUP=false
 DRY_RUN=false
 RESTART=true
+ALLOW_DRIFT=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -80,6 +82,7 @@ for arg in "$@"; do
     --backup)     BACKUP=true ;;
     --dry-run)    DRY_RUN=true ;;
     --no-restart) RESTART=false ;;
+    --allow-drift) ALLOW_DRIFT=true ;;
     --help|-h)
       head -20 "$0" | tail -18
       exit 0
@@ -149,34 +152,62 @@ Fix the LaunchAgent EnvironmentVariables.OPENCLAW_CONFIG_PATH before deploying."
   info "Dev config-path verified ✓ ($actual_abs)"
 }
 
-verify_prod_config_path_info() {
-  local plist_file="$1"
-  local expected_path="$2"
+sha256_file() {
+  local file_path="$1"
+  if [ ! -f "$file_path" ]; then
+    return 1
+  fi
+  shasum -a 256 "$file_path" | awk '{print $1}'
+}
+
+verify_config_drift() {
+  local env_name="$1"
+  local plist_file="$2"
+  local expected_path="$3"
   local actual_path
 
   if [ ! -f "$plist_file" ]; then
-    warn "Prod plist not found: $plist_file (skipping config-path info check)"
-    return
+    die "Config drift check failed: plist not found: $plist_file"
   fi
 
   actual_path=$("$PLUTIL_BIN" -extract EnvironmentVariables.OPENCLAW_CONFIG_PATH raw -o - "$plist_file" 2>/dev/null || true)
   if [ -z "$actual_path" ]; then
-    warn "Prod config-path info: OPENCLAW_CONFIG_PATH is not set in $plist_file"
-    return
+    die "Config drift check failed: OPENCLAW_CONFIG_PATH is missing in $plist_file"
   fi
 
-  local expected_abs actual_abs
+  local expected_abs actual_abs expected_sha actual_sha
   expected_abs="$(resolve_abs_path_no_fs "$expected_path")"
   actual_abs="$(resolve_abs_path_no_fs "$actual_path")"
+  expected_sha="$(sha256_file "$expected_abs" || true)"
+  actual_sha="$(sha256_file "$actual_abs" || true)"
 
-  if [ "$actual_abs" = "$expected_abs" ]; then
-    info "Prod config-path info ✓ ($actual_abs)"
+  if [ -z "$expected_sha" ]; then
+    die "Config drift check failed: expected config not found: $expected_abs"
+  fi
+
+  if [ -z "$actual_sha" ]; then
+    die "Config drift check failed: runtime config not found: $actual_abs"
+  fi
+
+  if [ "$actual_abs" = "$expected_abs" ] && [ "$actual_sha" = "$expected_sha" ]; then
+    info "$env_name config drift check ✓ ($actual_abs)"
     return
   fi
 
-  warn "Prod config-path info mismatch:
+  local message="Config drift detected for $env_name LaunchAgent:
   expected: $expected_abs
-  actual:   $actual_abs"
+  actual:   $actual_abs
+  expected sha256: $expected_sha
+  actual sha256:   $actual_sha"
+
+  if [ "$ALLOW_DRIFT" = true ]; then
+    warn "$message
+Proceeding because --allow-drift was set."
+    return
+  fi
+
+  die "$message
+Refusing to deploy with config drift. Re-run with --allow-drift to override."
 }
 
 # ── Resolve environment ──────────────────────────────────────────────
@@ -192,10 +223,16 @@ if [ "$ENV_NAME" = "dev" ] && [ "$DRY_RUN" = false ]; then
   echo ""
 fi
 
-# Prod informational check: warn on mismatch, but do not block deploy.
-if [ "$ENV_NAME" = "prod" ] && [ "$DRY_RUN" = false ]; then
-  info "Checking prod LaunchAgent OPENCLAW_CONFIG_PATH (informational)..."
-  verify_prod_config_path_info "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
+# Drift check: block deploy when runtime LaunchAgent config drifts from tracked
+# env config unless operator passes --allow-drift explicitly.
+if [ "$DRY_RUN" = false ]; then
+  if [ "$ENV_NAME" = "dev" ]; then
+    info "Checking dev config drift against tracked config..."
+    verify_config_drift "dev" "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
+  else
+    info "Checking prod config drift against tracked config..."
+    verify_config_drift "prod" "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
+  fi
   echo ""
 fi
 
