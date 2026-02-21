@@ -1,0 +1,4 @@
+{
+  // Example local-only prod overrides (keep untracked in your config repo).
+  // logging: { level: "info" },
+}

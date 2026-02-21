@@ -15,6 +15,7 @@
 #   --backup         Backup previous deployment first
 #   --dry-run        Show what would be synced without doing it
 #   --no-restart     Deploy without restarting the gateway (default: restart after deploy)
+#   --allow-drift    Allow LaunchAgent config-path/content drift from tracked config
 #
 # To deploy without restarting (e.g., staging for later activation):
 #   ./scripts/deploy-prod.sh --no-restart
@@ -45,6 +46,12 @@ resolve_env() {
 
 # ── Configuration ─────────────────────────────────────────────────────
 SOURCE_DIR="${OPENCLAW_SOURCE:-$HOME/Development/openclaw}"
+# Expected Dev config path for LaunchAgent verification.
+# Override if your dev config repo lives elsewhere.
+DEV_EXPECTED_CONFIG_PATH="${OPENCLAW_DEV_CONFIG_PATH:-$HOME/Deployments/openclaw-config/dev.json5}"
+PROD_EXPECTED_CONFIG_PATH="${OPENCLAW_PROD_CONFIG_PATH:-$HOME/Deployments/openclaw-config/prod.json5}"
+# Plutil binary path (override in tests/non-mac environments).
+PLUTIL_BIN="${PLUTIL_BIN:-/usr/bin/plutil}"
 
 # Runtime artifacts the gateway needs (and nothing else).
 # If upstream adds new runtime requirements, update this list.
@@ -66,6 +73,7 @@ SKIP_BUILD=false
 BACKUP=false
 DRY_RUN=false
 RESTART=true
+ALLOW_DRIFT=false
 
 for arg in "$@"; do
   case "$arg" in
@@ -74,6 +82,7 @@ for arg in "$@"; do
     --backup)     BACKUP=true ;;
     --dry-run)    DRY_RUN=true ;;
     --no-restart) RESTART=false ;;
+    --allow-drift) ALLOW_DRIFT=true ;;
     --help|-h)
       head -20 "$0" | tail -18
       exit 0
@@ -95,10 +104,137 @@ info()  { echo "  → $*"; }
 warn()  { echo "  ⚠ $*" >&2; }
 die()   { echo "  ✖ $*" >&2; exit 1; }
 
+resolve_abs_path_no_fs() {
+  local input="$1"
+  local path_in="$input"
+  case "$path_in" in
+    "~")
+      path_in="$HOME"
+      ;;
+    "~/"*)
+      path_in="$HOME/${path_in#~/}"
+      ;;
+  esac
+  if [[ "$path_in" = /* ]]; then
+    printf "%s\n" "$path_in"
+  else
+    printf "%s\n" "$PWD/$path_in"
+  fi
+}
+
+verify_dev_config_path() {
+  local plist_file="$1"
+  local expected_path="$2"
+  local actual_path
+
+  [ -f "$plist_file" ] || die "Dev plist not found: $plist_file"
+
+  # Read EnvironmentVariables.OPENCLAW_CONFIG_PATH from launchd plist.
+  # If missing or mismatched, fail fast before restart so we don't boot with
+  # the wrong config source.
+  actual_path=$("$PLUTIL_BIN" -extract EnvironmentVariables.OPENCLAW_CONFIG_PATH raw -o - "$plist_file" 2>/dev/null || true)
+
+  if [ -z "$actual_path" ]; then
+    die "Dev config-path verification failed: OPENCLAW_CONFIG_PATH is missing in $plist_file"
+  fi
+
+  local expected_abs actual_abs
+  expected_abs="$(resolve_abs_path_no_fs "$expected_path")"
+  actual_abs="$(resolve_abs_path_no_fs "$actual_path")"
+
+  if [ "$actual_abs" != "$expected_abs" ]; then
+    die "Dev config-path verification failed:
+  expected: $expected_abs
+  actual:   $actual_abs
+Fix the LaunchAgent EnvironmentVariables.OPENCLAW_CONFIG_PATH before deploying."
+  fi
+
+  info "Dev config-path verified ✓ ($actual_abs)"
+}
+
+sha256_file() {
+  local file_path="$1"
+  if [ ! -f "$file_path" ]; then
+    return 1
+  fi
+  shasum -a 256 "$file_path" | awk '{print $1}'
+}
+
+verify_config_drift() {
+  local env_name="$1"
+  local plist_file="$2"
+  local expected_path="$3"
+  local actual_path
+
+  if [ ! -f "$plist_file" ]; then
+    die "Config drift check failed: plist not found: $plist_file"
+  fi
+
+  actual_path=$("$PLUTIL_BIN" -extract EnvironmentVariables.OPENCLAW_CONFIG_PATH raw -o - "$plist_file" 2>/dev/null || true)
+  if [ -z "$actual_path" ]; then
+    die "Config drift check failed: OPENCLAW_CONFIG_PATH is missing in $plist_file"
+  fi
+
+  local expected_abs actual_abs expected_sha actual_sha
+  expected_abs="$(resolve_abs_path_no_fs "$expected_path")"
+  actual_abs="$(resolve_abs_path_no_fs "$actual_path")"
+  expected_sha="$(sha256_file "$expected_abs" || true)"
+  actual_sha="$(sha256_file "$actual_abs" || true)"
+
+  if [ -z "$expected_sha" ]; then
+    die "Config drift check failed: expected config not found: $expected_abs"
+  fi
+
+  if [ -z "$actual_sha" ]; then
+    die "Config drift check failed: runtime config not found: $actual_abs"
+  fi
+
+  if [ "$actual_abs" = "$expected_abs" ] && [ "$actual_sha" = "$expected_sha" ]; then
+    info "$env_name config drift check ✓ ($actual_abs)"
+    return
+  fi
+
+  local message="Config drift detected for $env_name LaunchAgent:
+  expected: $expected_abs
+  actual:   $actual_abs
+  expected sha256: $expected_sha
+  actual sha256:   $actual_sha"
+
+  if [ "$ALLOW_DRIFT" = true ]; then
+    warn "$message
+Proceeding because --allow-drift was set."
+    return
+  fi
+
+  die "$message
+Refusing to deploy with config drift. Re-run with --allow-drift to override."
+}
+
 # ── Resolve environment ──────────────────────────────────────────────
 [ -n "$ENV_NAME" ] || die "No environment specified. Use --env prod|dev or call via wrapper script."
 
 resolve_env "$ENV_NAME"
+
+# Dev-only safety check: ensure launchd service points at the expected
+# config-repo path before we restart.
+if [ "$ENV_NAME" = "dev" ] && [ "$DRY_RUN" = false ]; then
+  info "Verifying dev LaunchAgent OPENCLAW_CONFIG_PATH..."
+  verify_dev_config_path "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
+  echo ""
+fi
+
+# Drift check: block deploy when runtime LaunchAgent config drifts from tracked
+# env config unless operator passes --allow-drift explicitly.
+if [ "$DRY_RUN" = false ]; then
+  if [ "$ENV_NAME" = "dev" ]; then
+    info "Checking dev config drift against tracked config..."
+    verify_config_drift "dev" "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
+  else
+    info "Checking prod config drift against tracked config..."
+    verify_config_drift "prod" "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
+  fi
+  echo ""
+fi
 
 # ── Pre-flight checks ────────────────────────────────────────────────
 echo "╔══════════════════════════════════════╗"
