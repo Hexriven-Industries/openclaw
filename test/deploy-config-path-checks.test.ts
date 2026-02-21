@@ -55,6 +55,7 @@ cat "$file"
     const output = `${result.stdout}${result.stderr}`;
     expect(result.status).not.toBe(0);
     expect(output).toContain("Dev config-path verification failed");
+    expect(output).toContain(`${tempHome}/Deployments/openclaw-config/dev.json5`);
     expect(output).not.toContain("Source dir not found");
   });
 

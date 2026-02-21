@@ -101,6 +101,24 @@ info()  { echo "  → $*"; }
 warn()  { echo "  ⚠ $*" >&2; }
 die()   { echo "  ✖ $*" >&2; exit 1; }
 
+resolve_abs_path_no_fs() {
+  local input="$1"
+  local path_in="$input"
+  case "$path_in" in
+    "~")
+      path_in="$HOME"
+      ;;
+    "~/"*)
+      path_in="$HOME/${path_in#~/}"
+      ;;
+  esac
+  if [[ "$path_in" = /* ]]; then
+    printf "%s\n" "$path_in"
+  else
+    printf "%s\n" "$PWD/$path_in"
+  fi
+}
+
 verify_dev_config_path() {
   local plist_file="$1"
   local expected_path="$2"
@@ -118,8 +136,8 @@ verify_dev_config_path() {
   fi
 
   local expected_abs actual_abs
-  expected_abs="$(cd "$(dirname "$expected_path")" && pwd)/$(basename "$expected_path")"
-  actual_abs="$(cd "$(dirname "$actual_path")" && pwd 2>/dev/null)/$(basename "$actual_path")"
+  expected_abs="$(resolve_abs_path_no_fs "$expected_path")"
+  actual_abs="$(resolve_abs_path_no_fs "$actual_path")"
 
   if [ "$actual_abs" != "$expected_abs" ]; then
     die "Dev config-path verification failed:
@@ -148,8 +166,8 @@ verify_prod_config_path_info() {
   fi
 
   local expected_abs actual_abs
-  expected_abs="$(cd "$(dirname "$expected_path")" && pwd)/$(basename "$expected_path")"
-  actual_abs="$(cd "$(dirname "$actual_path")" && pwd 2>/dev/null)/$(basename "$actual_path")"
+  expected_abs="$(resolve_abs_path_no_fs "$expected_path")"
+  actual_abs="$(resolve_abs_path_no_fs "$actual_path")"
 
   if [ "$actual_abs" = "$expected_abs" ]; then
     info "Prod config-path info ✓ ($actual_abs)"
