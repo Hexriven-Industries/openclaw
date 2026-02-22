@@ -390,6 +390,10 @@ export async function monitorDiscordProvider(opts: MonitorDiscordOpts = {}) {
       );
     }
 
+    runtime.log?.(
+      `discord: native command deploy set (${account.accountId ?? "default"}): count=${commands.length} names=${commands.map((c) => c.name).join(",")}`,
+    );
+
     // Initialize exec approvals handler if enabled
     const execApprovalsConfig = discordCfg.execApprovals ?? {};
     const execApprovalsHandler = execApprovalsConfig.enabled
