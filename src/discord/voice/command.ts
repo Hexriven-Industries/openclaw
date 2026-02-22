@@ -13,6 +13,7 @@ import {
 import { resolveCommandAuthorizedFromAuthorizers } from "../../channels/command-gating.js";
 import type { OpenClawConfig } from "../../config/config.js";
 import type { DiscordAccountConfig } from "../../config/types.js";
+import { formatErrorMessage } from "../../infra/errors.js";
 import {
   allowListMatches,
   isDiscordGroupAllowedByPolicy,
@@ -205,7 +206,16 @@ export function createDiscordVoiceCommand(params: VoiceCommandContext): CommandW
     ];
 
     async run(interaction: CommandInteraction) {
-      const channel = await interaction.options.getChannel("channel", true);
+      let channel: Awaited<ReturnType<typeof interaction.options.getChannel>>;
+      try {
+        channel = await interaction.options.getChannel("channel", true);
+      } catch (err) {
+        await interaction.reply({
+          content: `Unable to access that voice channel (${formatErrorMessage(err)}).`,
+          ephemeral: true,
+        });
+        return;
+      }
       if (!channel || !("id" in channel)) {
         await interaction.reply({ content: "Voice channel not found.", ephemeral: true });
         return;
