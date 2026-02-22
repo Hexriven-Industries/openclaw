@@ -32,6 +32,7 @@ REMOTE_DEV_CONFIG="${REMOTE_ROOT}/Deployments/openclaw-config/dev.json5"
 REMOTE_DEV_STATE="${REMOTE_ROOT}/.openclaw-dev"
 REMOTE_DEV_BIN="${REMOTE_ROOT}/Deployments/openclaw-dev/dist/index.js"
 REMOTE_DEV_PLIST="${REMOTE_ROOT}/Library/LaunchAgents/ai.openclaw.dev.plist"
+REMOTE_NODE_BIN="${OPENCLAW_REMOTE_NODE_BIN:-node}"
 
 run_ssh() {
   local cmd="$1"
@@ -47,7 +48,7 @@ echo "  -> Remote dev gateway status"
 run_ssh "OPENCLAW_PROFILE=dev '${REMOTE_GATEWAY_CTL}' dev status"
 
 echo "  -> Remote dev deep status"
-run_ssh "DEV_TOKEN=\"\$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_GATEWAY_TOKEN raw -o - '${REMOTE_DEV_PLIST}')\"; OPENCLAW_CONFIG_PATH='${REMOTE_DEV_CONFIG}' OPENCLAW_STATE_DIR='${REMOTE_DEV_STATE}' OPENCLAW_GATEWAY_TOKEN=\"\$DEV_TOKEN\" node '${REMOTE_DEV_BIN}' status --deep"
+run_ssh "DEV_TOKEN=\"\$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_GATEWAY_TOKEN raw -o - '${REMOTE_DEV_PLIST}')\"; OPENCLAW_CONFIG_PATH='${REMOTE_DEV_CONFIG}' OPENCLAW_STATE_DIR='${REMOTE_DEV_STATE}' OPENCLAW_GATEWAY_TOKEN=\"\$DEV_TOKEN\"; if [[ -x '${REMOTE_DEV_BIN}' ]]; then '${REMOTE_DEV_BIN}' status --deep; else '${REMOTE_NODE_BIN}' '${REMOTE_DEV_BIN}' status --deep; fi"
 
 echo "  -> Remote dev channel probe"
-run_ssh "DEV_TOKEN=\"\$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_GATEWAY_TOKEN raw -o - '${REMOTE_DEV_PLIST}')\"; OPENCLAW_CONFIG_PATH='${REMOTE_DEV_CONFIG}' OPENCLAW_STATE_DIR='${REMOTE_DEV_STATE}' OPENCLAW_GATEWAY_TOKEN=\"\$DEV_TOKEN\" node '${REMOTE_DEV_BIN}' channels status --probe"
+run_ssh "DEV_TOKEN=\"\$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_GATEWAY_TOKEN raw -o - '${REMOTE_DEV_PLIST}')\"; OPENCLAW_CONFIG_PATH='${REMOTE_DEV_CONFIG}' OPENCLAW_STATE_DIR='${REMOTE_DEV_STATE}' OPENCLAW_GATEWAY_TOKEN=\"\$DEV_TOKEN\"; if [[ -x '${REMOTE_DEV_BIN}' ]]; then '${REMOTE_DEV_BIN}' channels status --probe; else '${REMOTE_NODE_BIN}' '${REMOTE_DEV_BIN}' channels status --probe; fi"
