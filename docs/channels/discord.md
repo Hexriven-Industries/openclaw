@@ -931,6 +931,24 @@ openclaw logs --follow
 
   </Accordion>
 
+  <Accordion title="/vc join hangs or /vc status shows no active sessions">
+    Common causes:
+
+    - missing voice runtime dependency `@snazzah/davey`
+    - missing voice channel permissions for the bot (View Channel, Connect, Speak)
+    - channel is not allowlisted under `channels.discord.guilds.<guildId>.channels` when channel allowlisting is enabled
+
+    Useful checks:
+
+```bash
+openclaw channels capabilities --channel discord --target channel:<voice_channel_id> --json
+openclaw logs --follow
+```
+
+    If logs include `Cannot utilize the DAVE protocol as the @snazzah/davey package has not been installed`, install dependencies (`pnpm install`) on the gateway host and restart the gateway.
+
+  </Accordion>
+
   <Accordion title="Require mention false but still blocked">
     Common causes:
 
