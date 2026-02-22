@@ -477,6 +477,12 @@ importers:
         specifier: workspace:*
         version: link:../..
 
+  extensions/tool-response-limiter:
+    devDependencies:
+      openclaw:
+        specifier: workspace:*
+        version: link:../..
+
   extensions/twitch:
     dependencies:
       '@twurple/api':
