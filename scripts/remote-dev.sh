@@ -25,8 +25,11 @@ ENV_FILE="${OPENCLAW_REMOTE_DEV_ENV_FILE:-$HOME/.openclaw-remote-dev.env}"
 
 load_env_file() {
   if [[ -f "$ENV_FILE" ]]; then
+    # Export loaded vars so child scripts can read OPENCLAW_REMOTE_*.
+    set -a
     # shellcheck disable=SC1090
     source "$ENV_FILE"
+    set +a
   fi
 }
 
