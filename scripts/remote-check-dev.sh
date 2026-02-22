@@ -23,6 +23,7 @@ fi
 REMOTE_USER="${OPENCLAW_REMOTE_USER:-$USER}"
 REMOTE_ROOT="${OPENCLAW_REMOTE_ROOT:-/Users/${REMOTE_USER}}"
 REMOTE_SSH_OPTS="${OPENCLAW_REMOTE_SSH_OPTS:-}"
+REMOTE_PATH="${OPENCLAW_REMOTE_PATH:-/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin}"
 REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 REMOTE_OPENCLAW_DIR="${OPENCLAW_REMOTE_OPENCLAW_DIR:-${REMOTE_ROOT}/Development/openclaw}"
 REMOTE_GATEWAY_CTL="${OPENCLAW_REMOTE_GATEWAY_CTL:-${REMOTE_OPENCLAW_DIR}/scripts/gateway-ctl.sh}"
@@ -33,11 +34,12 @@ REMOTE_DEV_BIN="${REMOTE_ROOT}/Deployments/openclaw-dev/dist/index.js"
 REMOTE_DEV_PLIST="${REMOTE_ROOT}/Library/LaunchAgents/ai.openclaw.dev.plist"
 
 run_ssh() {
+  local cmd="$1"
   if [[ -n "$REMOTE_SSH_OPTS" ]]; then
     # shellcheck disable=SC2086
-    ssh $REMOTE_SSH_OPTS "$REMOTE_TARGET" "$@"
+    ssh $REMOTE_SSH_OPTS "$REMOTE_TARGET" "export PATH='${REMOTE_PATH}'; ${cmd}"
   else
-    ssh "$REMOTE_TARGET" "$@"
+    ssh "$REMOTE_TARGET" "export PATH='${REMOTE_PATH}'; ${cmd}"
   fi
 }
 
