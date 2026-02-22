@@ -24,6 +24,8 @@ REMOTE_USER="${OPENCLAW_REMOTE_USER:-$USER}"
 REMOTE_ROOT="${OPENCLAW_REMOTE_ROOT:-/Users/${REMOTE_USER}}"
 REMOTE_SSH_OPTS="${OPENCLAW_REMOTE_SSH_OPTS:-}"
 REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
+REMOTE_OPENCLAW_DIR="${OPENCLAW_REMOTE_OPENCLAW_DIR:-${REMOTE_ROOT}/Development/openclaw}"
+REMOTE_GATEWAY_CTL="${OPENCLAW_REMOTE_GATEWAY_CTL:-${REMOTE_OPENCLAW_DIR}/scripts/gateway-ctl.sh}"
 
 REMOTE_DEV_CONFIG="${REMOTE_ROOT}/Deployments/openclaw-config/dev.json5"
 REMOTE_DEV_STATE="${REMOTE_ROOT}/.openclaw-dev"
@@ -40,7 +42,7 @@ run_ssh() {
 }
 
 echo "  -> Remote dev gateway status"
-run_ssh "OPENCLAW_PROFILE=dev gateway-ctl dev status"
+run_ssh "OPENCLAW_PROFILE=dev '${REMOTE_GATEWAY_CTL}' dev status"
 
 echo "  -> Remote dev deep status"
 run_ssh "DEV_TOKEN=\"\$(/usr/bin/plutil -extract EnvironmentVariables.OPENCLAW_GATEWAY_TOKEN raw -o - '${REMOTE_DEV_PLIST}')\"; OPENCLAW_CONFIG_PATH='${REMOTE_DEV_CONFIG}' OPENCLAW_STATE_DIR='${REMOTE_DEV_STATE}' OPENCLAW_GATEWAY_TOKEN=\"\$DEV_TOKEN\" node '${REMOTE_DEV_BIN}' status --deep"

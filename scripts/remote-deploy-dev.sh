@@ -26,6 +26,7 @@ fi
 REMOTE_USER="${OPENCLAW_REMOTE_USER:-$USER}"
 REMOTE_ROOT="${OPENCLAW_REMOTE_ROOT:-/Users/${REMOTE_USER}}"
 REMOTE_OPENCLAW_DIR="${OPENCLAW_REMOTE_OPENCLAW_DIR:-${REMOTE_ROOT}/Development/openclaw}"
+REMOTE_GATEWAY_CTL="${OPENCLAW_REMOTE_GATEWAY_CTL:-${REMOTE_OPENCLAW_DIR}/scripts/gateway-ctl.sh}"
 REMOTE_SSH_OPTS="${OPENCLAW_REMOTE_SSH_OPTS:-}"
 REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 
@@ -70,4 +71,4 @@ echo "  -> Running remote dev deploy"
 run_ssh "$REMOTE_DEPLOY_CMD"
 
 echo "  -> Remote gateway status"
-run_ssh "OPENCLAW_PROFILE=dev gateway-ctl dev status"
+run_ssh "OPENCLAW_PROFILE=dev '${REMOTE_GATEWAY_CTL}' dev status"

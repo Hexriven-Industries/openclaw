@@ -27,6 +27,8 @@ REMOTE_USER="${OPENCLAW_REMOTE_USER:-$USER}"
 REMOTE_ROOT="${OPENCLAW_REMOTE_ROOT:-/Users/${REMOTE_USER}}"
 REMOTE_CONFIG_DIR="${OPENCLAW_REMOTE_CONFIG_DIR:-${REMOTE_ROOT}/Development/openclaw-config}"
 REMOTE_DEV_BIN="${OPENCLAW_REMOTE_DEV_BIN:-${REMOTE_ROOT}/Deployments/openclaw-dev/dist/index.js}"
+REMOTE_OPENCLAW_DIR="${OPENCLAW_REMOTE_OPENCLAW_DIR:-${REMOTE_ROOT}/Development/openclaw}"
+REMOTE_GATEWAY_CTL="${OPENCLAW_REMOTE_GATEWAY_CTL:-${REMOTE_OPENCLAW_DIR}/scripts/gateway-ctl.sh}"
 REMOTE_SSH_OPTS="${OPENCLAW_REMOTE_SSH_OPTS:-}"
 REMOTE_TARGET="${REMOTE_USER}@${REMOTE_HOST}"
 LOCAL_CONFIG_DIR="${OPENCLAW_LOCAL_CONFIG_DIR:-${HOME}/Development/openclaw-config}"
@@ -36,7 +38,15 @@ if [[ ! -d "$LOCAL_CONFIG_DIR" ]]; then
   exit 1
 fi
 
-PASS_ARGS=("$@")
+RESTART_AFTER=0
+PASS_ARGS=()
+for arg in "$@"; do
+  if [[ "$arg" == "--restart" ]]; then
+    RESTART_AFTER=1
+  else
+    PASS_ARGS+=("$arg")
+  fi
+done
 
 run_ssh() {
   if [[ -n "$REMOTE_SSH_OPTS" ]]; then
@@ -61,3 +71,8 @@ done
 
 echo "  -> Running remote dev config deploy"
 run_ssh "$REMOTE_CMD"
+
+if [[ "$RESTART_AFTER" -eq 1 ]]; then
+  echo "  -> Restarting remote dev gateway"
+  run_ssh "OPENCLAW_PROFILE=dev '${REMOTE_GATEWAY_CTL}' dev restart"
+fi
