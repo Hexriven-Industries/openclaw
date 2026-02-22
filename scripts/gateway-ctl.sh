@@ -79,6 +79,26 @@ plist_read_raw() {
   "$PLUTIL_BIN" -extract "$key" raw -o - "$PLIST" 2>/dev/null || true
 }
 
+plist_read_program_arg() {
+  local idx="$1"
+  plist_read_raw "ProgramArguments.$idx"
+}
+
+plist_extract_program_arg_value() {
+  local flag="$1"
+  local i arg next
+  for i in $(seq 0 32); do
+    arg="$(plist_read_program_arg "$i")"
+    [ -n "$arg" ] || break
+    if [[ "$arg" == "$flag" ]]; then
+      next="$(plist_read_program_arg "$((i + 1))")"
+      [ -n "$next" ] && printf "%s\n" "$next"
+      return 0
+    fi
+  done
+  return 1
+}
+
 verify_plist_binding() {
   case "$ACTION" in
     start|restart|tui) ;;
@@ -94,8 +114,15 @@ verify_plist_binding() {
   local actual_config actual_state actual_entry actual_port
   actual_config="$(plist_read_raw EnvironmentVariables.OPENCLAW_CONFIG_PATH)"
   actual_state="$(plist_read_raw EnvironmentVariables.OPENCLAW_STATE_DIR)"
-  actual_entry="$(plist_read_raw ProgramArguments.1)"
-  actual_port="$(plist_read_raw ProgramArguments.3)"
+  actual_entry="$(plist_read_program_arg 1)"
+  actual_port="$(plist_extract_program_arg_value --port)"
+  if [ -z "$actual_port" ]; then
+    # Backward-compatible fallback for older layouts where the port may be positional.
+    actual_port="$(plist_read_program_arg 3)"
+    if [[ "$actual_port" == --* ]]; then
+      actual_port=""
+    fi
+  fi
 
   local expected_config expected_state expected_entry
   expected_config="$(resolve_abs_path_no_fs "$EXPECTED_CONFIG_PATH")"
