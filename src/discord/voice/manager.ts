@@ -385,74 +385,79 @@ export class DiscordVoiceManager {
       return { ok: false, message: `Failed to join voice channel: ${formatErrorMessage(err)}` };
     }
 
-    const sessionChannelId = channelInfo?.id ?? channelId;
-    // Use the voice channel id as the session channel so text chat in the voice channel
-    // shares the same session as spoken audio.
-    if (sessionChannelId !== channelId) {
-      logVoiceVerbose(
-        `join: using session channel ${sessionChannelId} for voice channel ${channelId}`,
-      );
-    }
-    const route = resolveAgentRoute({
-      cfg: this.params.cfg,
-      channel: "discord",
-      accountId: this.params.accountId,
-      guildId,
-      peer: { kind: "channel", id: sessionChannelId },
-    });
-
-    const player = createAudioPlayer();
-    connection.subscribe(player);
-
-    const entry: VoiceSessionEntry = {
-      guildId,
-      channelId,
-      sessionChannelId,
-      route,
-      connection,
-      player,
-      playbackQueue: Promise.resolve(),
-      processingQueue: Promise.resolve(),
-      activeSpeakers: new Set(),
-      stop: () => {
-        player.stop();
-        connection.destroy();
-      },
-    };
-
-    const speakingHandler = (userId: string) => {
-      void this.handleSpeakingStart(entry, userId).catch((err) => {
-        logger.warn(`discord voice: capture failed: ${formatErrorMessage(err)}`);
-      });
-    };
-
-    connection.receiver.speaking.on("start", speakingHandler);
-    connection.on(VoiceConnectionStatus.Disconnected, async () => {
-      try {
-        await Promise.race([
-          entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
-          entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
-        ]);
-      } catch {
-        this.sessions.delete(guildId);
-        connection.destroy();
+    try {
+      const sessionChannelId = channelInfo?.id ?? channelId;
+      // Use the voice channel id as the session channel so text chat in the voice channel
+      // shares the same session as spoken audio.
+      if (sessionChannelId !== channelId) {
+        logVoiceVerbose(
+          `join: using session channel ${sessionChannelId} for voice channel ${channelId}`,
+        );
       }
-    });
-    connection.on(VoiceConnectionStatus.Destroyed, () => {
-      this.sessions.delete(guildId);
-    });
+      const route = resolveAgentRoute({
+        cfg: this.params.cfg,
+        channel: "discord",
+        accountId: this.params.accountId,
+        guildId,
+        peer: { kind: "channel", id: sessionChannelId },
+      });
 
-    player.on("error", (err) => {
-      logger.warn(`discord voice: playback error: ${formatErrorMessage(err)}`);
-    });
+      const player = createAudioPlayer();
+      connection.subscribe(player);
 
-    this.sessions.set(guildId, entry);
-    return {
-      ok: true,
-      message: `Joined <#${channelId}>.`,
-      guildId,
-      channelId,
-    };
+      const entry: VoiceSessionEntry = {
+        guildId,
+        channelId,
+        sessionChannelId,
+        route,
+        connection,
+        player,
+        playbackQueue: Promise.resolve(),
+        processingQueue: Promise.resolve(),
+        activeSpeakers: new Set(),
+        stop: () => {
+          player.stop();
+          connection.destroy();
+        },
+      };
+
+      const speakingHandler = (userId: string) => {
+        void this.handleSpeakingStart(entry, userId).catch((err) => {
+          logger.warn(`discord voice: capture failed: ${formatErrorMessage(err)}`);
+        });
+      };
+
+      connection.receiver.speaking.on("start", speakingHandler);
+      connection.on(VoiceConnectionStatus.Disconnected, async () => {
+        try {
+          await Promise.race([
+            entersState(connection, VoiceConnectionStatus.Signalling, 5_000),
+            entersState(connection, VoiceConnectionStatus.Connecting, 5_000),
+          ]);
+        } catch {
+          this.sessions.delete(guildId);
+          connection.destroy();
+        }
+      });
+      connection.on(VoiceConnectionStatus.Destroyed, () => {
+        this.sessions.delete(guildId);
+      });
+
+      player.on("error", (err) => {
+        logger.warn(`discord voice: playback error: ${formatErrorMessage(err)}`);
+      });
+
+      this.sessions.set(guildId, entry);
+      return {
+        ok: true,
+        message: `Joined <#${channelId}>.`,
+        guildId,
+        channelId,
+      };
+    } catch (err) {
+      connection.destroy();
+      return { ok: false, message: `Failed to join voice channel: ${formatErrorMessage(err)}` };
+    }
   }
 
   async leave(params: { guildId: string; channelId?: string }): Promise<VoiceOperationResult> {
