@@ -358,6 +358,22 @@ if [ "$DRY_RUN" = false ]; then
   info "Deployment verified ✓ ($DEPLOY_SIZE)"
 fi
 
+# Dev-only hardening smoke check (post-sync, pre-restart).
+# Verifies critical guardrails before handing off a fresh runtime.
+if [ "$ENV_NAME" = "dev" ] && [ "$DRY_RUN" = false ]; then
+  HARDENING_CHECK_SCRIPT="$SOURCE_DIR/scripts/check-dev-hardening.sh"
+  if [ -x "$HARDENING_CHECK_SCRIPT" ]; then
+    echo ""
+    info "Running dev hardening smoke check..."
+    OPENCLAW_BIN="$DEPLOY_DIR/dist/index.js" \
+      OPENCLAW_CONFIG_PATH="$DEV_EXPECTED_CONFIG_PATH" \
+      OPENCLAW_STATE_DIR="$HOME/.openclaw-dev" \
+      "$HARDENING_CHECK_SCRIPT"
+  else
+    warn "Dev hardening check not found/executable, skipping: $HARDENING_CHECK_SCRIPT"
+  fi
+fi
+
 # ── Restart gateway ───────────────────────────────────────────────────
 if [ "$RESTART" = true ] && [ "$DRY_RUN" = false ]; then
   echo ""
