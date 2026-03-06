@@ -1,16 +1,16 @@
-# Upstream Catch-Up Plan (v2026.2.26)
+# Upstream Catch-Up Plan (v2026.3.2)
 
-Last updated: 2026-02-27
-Working branch: `codex/upstream-v2026.2.26-integration`
+Last updated: 2026-03-05
+Working branch: `codex/upstream-v2026.2.26-integration` (name retained; target updated in-place)
 Base branch: `development`
-Pinned upstream target: `v2026.2.26`
+Pinned upstream target: `v2026.3.2`
 
 ## Baseline Snapshot
 
-- `upstream/main` currently resolves to tag: `v2026.2.26`
+- `upstream/main` currently resolves to tag: `v2026.3.2`
 - `development` currently resolves to tag: `v2026.2.21`
 - Divergence at snapshot time:
-  - behind: `development..upstream/main` = `2254` commits
+  - behind: `development..upstream/main` = `3930` commits
   - ahead: `upstream/main..development` = `106` commits
 
 ## Execution Sequence

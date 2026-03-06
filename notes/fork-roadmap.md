@@ -16,7 +16,7 @@ Purpose: durable in-repo tracker for in-flight work, sequencing, and checkpoints
 
 Status: planned (next major workstream)
 
-- Target version: latest upstream stable tag at execution time (currently seen as `v2026.2.26`; verify before starting).
+- Target version: latest upstream stable tag at execution time (currently `v2026.3.2`; verify again before merge/deploy).
 - Baseline objective: merge/rebase `development` onto upstream stable and resolve fork deltas cleanly.
 - Exit criteria:
   - Dev deploy succeeds.
@@ -80,15 +80,16 @@ Status: paused for OpenClaw upstream catch-up
 ## Next 10 Actions (Ordered)
 
 1. Snapshot/park current OpenClaw Smartdust WIP on a dedicated branch.
-2. Fetch upstream and lock exact target tag for integration.
-3. Build integration branch from `development` and complete upstream catch-up.
-4. Stand up new Mac mini M4 Ultra host baseline (OS, runtime, OpenClaw latest stable).
-5. Install fresh OpenClaw on new host from upstream tag (no fork-specific policy carryover).
-6. Migrate Clawdy workspace/state needed for memory continuity; exclude legacy policy baggage/custom guard plugins initially.
-7. Configure "safe but usable" defaults on new host and run canary checklist (chat/new/exec/vc/cron/backup smoke).
-8. Add reliability watchdog + UI asset gate on new host.
-9. Run controlled cutover from old Prod to new host with rollback plan.
-10. Document cutover results and reopen Smartdust phase.
+2. Retarget catch-up plan to the current upstream stable tag and keep the doc current.
+3. Build the first focused compare set against `v2026.3.2` (policy/discord/exec/voice).
+4. Complete upstream catch-up on the integration branch.
+5. Stand up new Mac mini M4 Ultra host baseline (OS, runtime, OpenClaw latest stable).
+6. Install fresh OpenClaw on new host from upstream tag (no fork-specific policy carryover).
+7. Migrate Clawdy workspace/state needed for memory continuity; exclude legacy policy baggage/custom guard plugins initially.
+8. Configure "safe but usable" defaults on new host and run canary checklist (chat/new/exec/vc/cron/backup smoke).
+9. Add reliability watchdog + UI asset gate on new host.
+10. Run controlled cutover from old Prod to new host with rollback plan.
+11. Document cutover results and reopen Smartdust phase.
 
 ## Open Questions
 
