@@ -22,6 +22,17 @@ type MockChatLog = {
 };
 type MockTui = { requestRender: MockFn };
 
+function createMockChatLog(): MockChatLog & HandlerChatLog {
+  return {
+    startTool: vi.fn(),
+    updateToolResult: vi.fn(),
+    addSystem: vi.fn(),
+    updateAssistant: vi.fn(),
+    finalizeAssistant: vi.fn(),
+    dropAssistant: vi.fn(),
+  } as unknown as MockChatLog & HandlerChatLog;
+}
+
 describe("tui-event-handlers: handleAgentEvent", () => {
   const makeState = (overrides?: Partial<TuiStateAccess>): TuiStateAccess => ({
     agentDefaultId: "main",
@@ -47,14 +58,7 @@ describe("tui-event-handlers: handleAgentEvent", () => {
   });
 
   const makeContext = (state: TuiStateAccess) => {
-    const chatLog = {
-      startTool: vi.fn(),
-      updateToolResult: vi.fn(),
-      addSystem: vi.fn(),
-      updateAssistant: vi.fn(),
-      finalizeAssistant: vi.fn(),
-      dropAssistant: vi.fn(),
-    } as unknown as MockChatLog & HandlerChatLog;
+    const chatLog = createMockChatLog();
     const tui = { requestRender: vi.fn() } as unknown as MockTui & HandlerTui;
     const setActivityStatus = vi.fn();
     const loadHistory = vi.fn();
@@ -62,13 +66,9 @@ describe("tui-event-handlers: handleAgentEvent", () => {
     const noteLocalRunId = (runId: string) => {
       localRunIds.add(runId);
     };
-    const forgetLocalRunId = (runId: string) => {
-      localRunIds.delete(runId);
-    };
-    const isLocalRunId = (runId: string) => localRunIds.has(runId);
-    const clearLocalRunIds = () => {
-      localRunIds.clear();
-    };
+    const forgetLocalRunId = localRunIds.delete.bind(localRunIds);
+    const isLocalRunId = localRunIds.has.bind(localRunIds);
+    const clearLocalRunIds = localRunIds.clear.bind(localRunIds);
 
     return {
       chatLog,
@@ -148,14 +148,7 @@ describe("tui-event-handlers: handleAgentEvent", () => {
   });
 
   it("processes lifecycle events when runId matches activeChatRunId", () => {
-    const chatLog = {
-      startTool: vi.fn(),
-      updateToolResult: vi.fn(),
-      addSystem: vi.fn(),
-      updateAssistant: vi.fn(),
-      finalizeAssistant: vi.fn(),
-      dropAssistant: vi.fn(),
-    } as unknown as HandlerChatLog;
+    const chatLog = createMockChatLog();
     const { tui, setActivityStatus, handleAgentEvent } = createHandlersHarness({
       state: { activeChatRunId: "run-9" },
       chatLog,
@@ -408,6 +401,26 @@ describe("tui-event-handlers: handleAgentEvent", () => {
     expect(chatLog.dropAssistant).toHaveBeenCalledWith("run-other");
     expect(loadHistory).not.toHaveBeenCalled();
     expect(state.activeChatRunId).toBe("run-active");
+  });
+
+  it("renders final error text when chat final has no content but includes event errorMessage", () => {
+    const { state, chatLog, handleChatEvent } = createHandlersHarness({
+      state: { activeChatRunId: null },
+    });
+
+    handleChatEvent({
+      runId: "run-error-envelope",
+      sessionKey: state.currentSessionKey,
+      state: "final",
+      message: { content: [] },
+      errorMessage: '401 {"error":{"message":"Missing scopes: model.request"}}',
+    });
+
+    expect(chatLog.finalizeAssistant).toHaveBeenCalledTimes(1);
+    const [rendered] = chatLog.finalizeAssistant.mock.calls[0] ?? [];
+    expect(String(rendered)).toContain("HTTP 401");
+    expect(String(rendered)).toContain("Missing scopes: model.request");
+    expect(chatLog.dropAssistant).not.toHaveBeenCalledWith("run-error-envelope");
   });
 
   it("drops streaming assistant when chat final has no message", () => {
