@@ -17,6 +17,7 @@ import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
 import { createSessionsSendTool } from "./tools/sessions-send-tool.js";
 import { createSessionsSpawnTool } from "./tools/sessions-spawn-tool.js";
+import { createSmartdustTool } from "./tools/smartdust-tool.js";
 import { createSubagentsTool } from "./tools/subagents-tool.js";
 import { createTtsTool } from "./tools/tts-tool.js";
 import { createWebFetchTool, createWebSearchTool } from "./tools/web-tools.js";
@@ -67,6 +68,10 @@ export function createOpenClawTools(options?: {
   senderIsOwner?: boolean;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
+  const requesterAgentId = resolveSessionAgentId({
+    sessionKey: options?.agentSessionKey,
+    config: options?.config,
+  });
   const imageTool = options?.agentDir?.trim()
     ? createImageTool({
         config: options?.config,
@@ -114,6 +119,14 @@ export function createOpenClawTools(options?: {
     }),
     createCronTool({
       agentSessionKey: options?.agentSessionKey,
+    }),
+    createSmartdustTool({
+      agentSessionKey: options?.agentSessionKey,
+      requesterAgentId: options?.requesterAgentIdOverride ?? requesterAgentId,
+      agentChannel: options?.agentChannel,
+      agentGroupId: options?.agentGroupId,
+      agentGroupSpace: options?.agentGroupSpace,
+      requesterSenderId: options?.requesterSenderId ?? null,
     }),
     ...(messageTool ? [messageTool] : []),
     createTtsTool({
@@ -170,10 +183,7 @@ export function createOpenClawTools(options?: {
       config: options?.config,
       workspaceDir,
       agentDir: options?.agentDir,
-      agentId: resolveSessionAgentId({
-        sessionKey: options?.agentSessionKey,
-        config: options?.config,
-      }),
+      agentId: requesterAgentId,
       sessionKey: options?.agentSessionKey,
       messageChannel: options?.agentChannel,
       agentAccountId: options?.agentAccountId,
