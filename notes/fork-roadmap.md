@@ -1,6 +1,6 @@
 # OpenClaw Fork Roadmap (Working Doc)
 
-Last updated: 2026-03-03
+Last updated: 2026-03-07
 Owner: Hexriven + Codex
 Purpose: durable in-repo tracker for in-flight work, sequencing, and checkpoints.
 
@@ -14,14 +14,19 @@ Purpose: durable in-repo tracker for in-flight work, sequencing, and checkpoints
 
 ### A) Upstream Catch-Up
 
-Status: planned (next major workstream)
+Status: completed
 
-- Target version: latest upstream stable tag at execution time (currently `v2026.3.2`; verify again before merge/deploy).
-- Baseline objective: merge/rebase `development` onto upstream stable and resolve fork deltas cleanly.
-- Exit criteria:
-  - Dev deploy succeeds.
-  - Core chat + `/new` + exec approvals + `/vc` pass canary.
-  - No critical security regressions in `status --deep` / `security audit --deep`.
+- Target landed: upstream stable line promoted into `development`.
+- New baseline branch: `development`
+- Promotion result:
+  - Dev deploy succeeds from `development`
+  - core chat works
+  - `/new` works
+  - `nano-banana-pro` works in Dev
+  - async MEDIA swallow bug fixed
+  - duplicate-attachment seams fixed
+  - structured recall lane is functional enough for follow-on work
+- Remaining work here is quality tuning, not baseline integration.
 
 ### B) Migration-First Rebaseline (M4 Ultra)
 
@@ -64,7 +69,11 @@ Status: partially mitigated, needs hardening follow-up
 Status: paused for OpenClaw upstream catch-up
 
 - Smartdust spec exists and early PRs are merged in `smartdust` repo.
-- Resume only after OpenClaw baseline is upgraded and policy model is stable.
+- OpenClaw baseline upgrade is now complete.
+- Resume only after:
+  - Dev burn-in on the new `development` baseline,
+  - M4 migration planning is concrete,
+  - tool/worker policy direction is stable.
 - Re-entry criteria:
   - OpenClaw catch-up complete,
   - policy rebalance implemented and tested in Dev,
@@ -77,19 +86,30 @@ Status: paused for OpenClaw upstream catch-up
 - Keep backup verification explicit (artifact existence + size + timestamp).
 - Prefer small, auditable commits over large mixed change sets.
 
-## Next 10 Actions (Ordered)
+## Current Baseline
 
-1. Snapshot/park current OpenClaw Smartdust WIP on a dedicated branch.
-2. Retarget catch-up plan to the current upstream stable tag and keep the doc current.
-3. Build the first focused compare set against `v2026.3.2` (policy/discord/exec/voice).
-4. Complete upstream catch-up on the integration branch.
-5. Stand up new Mac mini M4 Ultra host baseline (OS, runtime, OpenClaw latest stable).
-6. Install fresh OpenClaw on new host from upstream tag (no fork-specific policy carryover).
-7. Migrate Clawdy workspace/state needed for memory continuity; exclude legacy policy baggage/custom guard plugins initially.
-8. Configure "safe but usable" defaults on new host and run canary checklist (chat/new/exec/vc/cron/backup smoke).
-9. Add reliability watchdog + UI asset gate on new host.
-10. Run controlled cutover from old Prod to new host with rollback plan.
-11. Document cutover results and reopen Smartdust phase.
+- `development` is now the active fork baseline.
+- Dev is running from `development`.
+- Prod remains untouched in this promotion cycle.
+- The following Dev workstreams are complete enough:
+  - durable `nano-banana-pro` exposure
+  - async MEDIA promotion fix
+  - duplicate-attachment fixes
+  - structured recall routing improvement
+  - post-promotion `nano-banana-pro` anti-shell-debug guidance
+
+## Next Active Priorities (Ordered)
+
+1. Let Dev burn in on `development` and only fix clear regressions.
+2. Finalize the M4 Ultra migration checklist and cutover plan.
+3. Stand up the new Mac mini M4 Ultra host baseline (OS, runtime, OpenClaw latest stable).
+4. Install fresh OpenClaw on the new host from upstream (no legacy config sludge by default).
+5. Migrate Clawdy workspace/state needed for continuity; do not blindly import old policy baggage or custom guard plugins.
+6. Reconnect Obsidian/vault access and confirm memory continuity.
+7. Re-establish "safe but useful" defaults and validate with the canary checklist.
+8. Add reliability watchdog + UI asset verification on the new host.
+9. Run controlled cutover from current Prod to the new host with rollback plan.
+10. Resume Smartdust and deeper worker/tool-agent design only after the new baseline is stable.
 
 ## Open Questions
 
