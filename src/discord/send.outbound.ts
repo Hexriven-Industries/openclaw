@@ -7,8 +7,10 @@ import { resolveChunkMode } from "../auto-reply/chunk.js";
 import { loadConfig, type OpenClawConfig } from "../config/config.js";
 import { resolveMarkdownTableMode } from "../config/markdown-tables.js";
 import { recordChannelActivity } from "../infra/channel-activity.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import type { RetryConfig } from "../infra/retry.js";
 import { resolvePreferredOpenClawTmpDir } from "../infra/tmp-openclaw-dir.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { convertMarkdownTables } from "../markdown/tables.js";
 import { maxBytesForKind } from "../media/constants.js";
 import { extensionForMime } from "../media/mime.js";
@@ -59,6 +61,15 @@ type DiscordSendOpts = {
 };
 
 type DiscordClientRequest = ReturnType<typeof createDiscordClient>["request"];
+
+const outboundDeliveryLog = createSubsystemLogger("discord/delivery-debug");
+
+function logOutboundDeliveryDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  outboundDeliveryLog.debug(message, meta);
+}
 
 type DiscordChannelMessageResult = {
   id?: string | null;
@@ -152,6 +163,14 @@ export async function sendMessageDiscord(
   const { token, rest, request } = createDiscordClient(opts, cfg);
   const recipient = await parseAndResolveRecipient(to, opts.accountId, cfg);
   const { channelId } = await resolveChannelId(rest, recipient, request);
+  logOutboundDeliveryDebug("discord send resolve target", {
+    to,
+    recipientType: recipient.kind,
+    channelId,
+    hasMedia: Boolean(opts.mediaUrl),
+    hasReplyTo: Boolean(opts.replyTo),
+    silent: Boolean(opts.silent),
+  });
 
   // Forum/Media channels reject POST /messages; auto-create a thread post instead.
   const channelType = await resolveDiscordChannelType(rest, channelId);
@@ -189,6 +208,11 @@ export async function sendMessageDiscord(
         "forum-thread",
       )) as { id: string; message?: { id: string; channel_id: string } };
     } catch (err) {
+      logOutboundDeliveryDebug("discord send forum thread failed", {
+        to,
+        channelId,
+        error: String(err),
+      });
       throw await buildDiscordSendError(err, {
         channelId,
         rest,
@@ -240,6 +264,11 @@ export async function sendMessageDiscord(
         });
       }
     } catch (err) {
+      logOutboundDeliveryDebug("discord send forum thread follow-up failed", {
+        to,
+        channelId: threadId,
+        error: String(err),
+      });
       throw await buildDiscordSendError(err, {
         channelId: threadId,
         rest,
@@ -252,6 +281,14 @@ export async function sendMessageDiscord(
       channel: "discord",
       accountId: accountInfo.accountId,
       direction: "outbound",
+    });
+    logOutboundDeliveryDebug("discord send forum thread success", {
+      to,
+      channelId,
+      threadId,
+      messageId,
+      resultChannelId,
+      hasMedia: Boolean(opts.mediaUrl),
     });
     return toDiscordSendResult(
       {
@@ -294,6 +331,12 @@ export async function sendMessageDiscord(
       );
     }
   } catch (err) {
+    logOutboundDeliveryDebug("discord send failed", {
+      to,
+      channelId,
+      hasMedia: Boolean(opts.mediaUrl),
+      error: String(err),
+    });
     throw await buildDiscordSendError(err, {
       channelId,
       rest,
@@ -307,7 +350,15 @@ export async function sendMessageDiscord(
     accountId: accountInfo.accountId,
     direction: "outbound",
   });
-  return toDiscordSendResult(result, channelId);
+  const sendResult = toDiscordSendResult(result, channelId);
+  logOutboundDeliveryDebug("discord send success", {
+    to,
+    channelId,
+    hasMedia: Boolean(opts.mediaUrl),
+    messageId: sendResult.messageId,
+    resultChannelId: sendResult.channelId,
+  });
+  return sendResult;
 }
 
 type DiscordWebhookSendOpts = {

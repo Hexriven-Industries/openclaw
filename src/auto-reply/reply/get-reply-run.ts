@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { drainAsyncExecMedia } from "../../agents/async-exec-media.js";
 import { resolveSessionAuthProfileOverride } from "../../agents/auth-profiles/session-override.js";
 import type { ExecToolDefaults } from "../../agents/bash-tools.js";
 import {
@@ -353,6 +354,10 @@ export async function runPreparedReply(
     isMainSession,
     isNewSession,
   });
+  const queuedAsyncMedia = drainAsyncExecMedia(sessionKey);
+  if (queuedAsyncMedia.length > 0 && opts?.onToolResult) {
+    await opts.onToolResult({ mediaUrls: queuedAsyncMedia });
+  }
   const prependEvents = (body: string) => (eventsBlock ? `${eventsBlock}\n\n${body}` : body);
   const bodyWithEvents = prependEvents(effectiveBaseBody);
   prefixedBodyBase = prependEvents(prefixedBodyBase);

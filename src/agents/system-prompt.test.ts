@@ -228,13 +228,35 @@ describe("buildAgentSystemPrompt", () => {
   it("lists available tools when provided", () => {
     const prompt = buildAgentSystemPrompt({
       workspaceDir: "/tmp/openclaw",
-      toolNames: ["exec", "sessions_list", "sessions_history", "sessions_send"],
+      toolNames: [
+        "exec",
+        "memory_search",
+        "memory_get",
+        "sessions_list",
+        "sessions_history",
+        "sessions_send",
+      ],
     });
 
     expect(prompt).toContain("Tool availability (filtered by policy):");
+    expect(prompt).toContain("memory_search");
+    expect(prompt).toContain("memory_get");
     expect(prompt).toContain("sessions_list");
     expect(prompt).toContain("sessions_history");
     expect(prompt).toContain("sessions_send");
+  });
+
+  it("routes recent conversation recall to sessions_history when memory and session tools are available", () => {
+    const prompt = buildAgentSystemPrompt({
+      workspaceDir: "/tmp/openclaw",
+      toolNames: ["memory_search", "memory_get", "sessions_history"],
+    });
+
+    expect(prompt).toContain("## Memory Recall");
+    expect(prompt).toContain("use sessions_history first");
+    expect(prompt).toContain(
+      "Use raw exec or shell archaeology only if sessions_history and memory tools cannot answer the question.",
+    );
   });
 
   it("documents ACP sessions_spawn agent targeting requirements", () => {

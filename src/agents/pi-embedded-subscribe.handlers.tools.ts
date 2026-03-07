@@ -1,5 +1,7 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { PluginHookAfterToolCallEvent } from "../plugins/types.js";
 import { normalizeTextForComparison } from "./pi-embedded-helpers.js";
@@ -29,6 +31,14 @@ type ToolStartRecord = {
 
 /** Track tool execution start data for after_tool_call hook. */
 const toolStartData = new Map<string, ToolStartRecord>();
+const messagingDeliveryLog = createSubsystemLogger("agent/messaging-delivery-debug");
+
+function logMessagingDeliveryDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  messagingDeliveryLog.debug(message, meta);
+}
 
 function buildToolStartKey(runId: string, toolCallId: string): string {
   return `${runId}:${toolCallId}`;
@@ -139,7 +149,7 @@ function collectMessagingMediaUrlsFromToolResult(result: unknown): string[] {
   return urls;
 }
 
-function emitToolResultOutput(params: {
+async function emitToolResultOutput(params: {
   ctx: ToolHandlerContext;
   toolName: string;
   meta?: string;
@@ -171,7 +181,9 @@ function emitToolResultOutput(params: {
     return;
   }
   try {
-    void ctx.params.onToolResult({ mediaUrls: mediaPaths });
+    await ctx.params.onToolResult({ mediaUrls: mediaPaths });
+    ctx.state.messagingToolSentMediaUrls.push(...mediaPaths);
+    ctx.trimMessagingToolSent();
   } catch {
     // ignore delivery failures
   }
@@ -253,17 +265,36 @@ export async function handleToolExecutionStart(
       const sendTarget = extractMessagingToolSend(toolName, argsRecord);
       if (sendTarget) {
         ctx.state.pendingMessagingTargets.set(toolCallId, sendTarget);
+        logMessagingDeliveryDebug("messaging tool pending target tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          sendTarget,
+        });
       }
       // Field names vary by tool: Discord/Slack use "content", sessions_send uses "message"
       const text = (argsRecord.content as string) ?? (argsRecord.message as string);
       if (text && typeof text === "string") {
         ctx.state.pendingMessagingTexts.set(toolCallId, text);
         ctx.log.debug(`Tracking pending messaging text: tool=${toolName} len=${text.length}`);
+        logMessagingDeliveryDebug("messaging tool pending text tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          textLength: text.length,
+        });
       }
       // Track media URLs from messaging tool args (pending until tool_execution_end).
       const mediaUrls = collectMessagingMediaUrlsFromRecord(argsRecord);
       if (mediaUrls.length > 0) {
         ctx.state.pendingMessagingMediaUrls.set(toolCallId, mediaUrls);
+        logMessagingDeliveryDebug("messaging tool pending media tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          mediaCount: mediaUrls.length,
+          mediaUrls,
+        });
       }
     }
   }
@@ -360,6 +391,12 @@ export async function handleToolExecutionEnd(
       ctx.state.messagingToolSentTexts.push(pendingText);
       ctx.state.messagingToolSentTextsNormalized.push(normalizeTextForComparison(pendingText));
       ctx.log.debug(`Committed messaging text: tool=${toolName} len=${pendingText.length}`);
+      logMessagingDeliveryDebug("messaging tool text committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        textLength: pendingText.length,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -367,6 +404,12 @@ export async function handleToolExecutionEnd(
     ctx.state.pendingMessagingTargets.delete(toolCallId);
     if (!isToolError) {
       ctx.state.messagingToolSentTargets.push(pendingTarget);
+      logMessagingDeliveryDebug("messaging tool target committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        pendingTarget,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -391,6 +434,13 @@ export async function handleToolExecutionEnd(
     ];
     if (committedMediaUrls.length > 0) {
       ctx.state.messagingToolSentMediaUrls.push(...committedMediaUrls);
+      logMessagingDeliveryDebug("messaging tool media committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        mediaCount: committedMediaUrls.length,
+        mediaUrls: committedMediaUrls,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -427,7 +477,7 @@ export async function handleToolExecutionEnd(
     `embedded run tool end: runId=${ctx.params.runId} tool=${toolName} toolCallId=${toolCallId}`,
   );
 
-  emitToolResultOutput({ ctx, toolName, meta, isToolError, result, sanitizedResult });
+  await emitToolResultOutput({ ctx, toolName, meta, isToolError, result, sanitizedResult });
 
   // Run after_tool_call plugin hook (fire-and-forget)
   const hookRunnerAfter = ctx.hookRunner ?? getGlobalHookRunner();

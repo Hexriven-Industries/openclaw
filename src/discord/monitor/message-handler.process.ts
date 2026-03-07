@@ -26,6 +26,8 @@ import { resolveDiscordPreviewStreamMode } from "../../config/discord-preview-st
 import { resolveMarkdownTableMode } from "../../config/markdown-tables.js";
 import { readSessionUpdatedAt, resolveStorePath } from "../../config/sessions.js";
 import { danger, logVerbose, shouldLogVerbose } from "../../globals.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { convertMarkdownTables } from "../../markdown/tables.js";
 import { getAgentScopedMediaLocalRoots } from "../../media/local-roots.js";
 import { buildAgentSessionKey } from "../../routing/resolve-route.js";
@@ -51,6 +53,15 @@ import { buildDirectLabel, buildGuildLabel, resolveReplyContext } from "./reply-
 import { deliverDiscordReply } from "./reply-delivery.js";
 import { resolveDiscordAutoThreadReplyPlan, resolveDiscordThreadStarter } from "./threading.js";
 import { sendTyping } from "./typing.js";
+
+const deliveryProcessLog = createSubsystemLogger("discord/delivery-debug");
+
+function logDeliveryProcessDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  deliveryProcessLog.debug(message, meta);
+}
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -687,6 +698,16 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
         }
 
         const replyToId = replyReference.use();
+        logDeliveryProcessDebug("discord delivery dispatch begin", {
+          deliverChannelId,
+          deliverTarget,
+          replyToId,
+          replyToMode,
+          sessionKey: ctxPayload.SessionKey,
+          payloadCount: 1,
+          hasMedia: Boolean(payload.mediaUrl || payload.mediaUrls?.length),
+          isError: payload.isError,
+        });
         await deliverDiscordReply({
           replies: [payload],
           target: deliverTarget,
@@ -704,7 +725,19 @@ export async function processDiscordMessage(ctx: DiscordMessagePreflightContext)
           threadBindings,
           mediaLocalRoots,
         });
+        logDeliveryProcessDebug("discord delivery dispatch resolved", {
+          deliverChannelId,
+          deliverTarget,
+          replyToId,
+          sessionKey: ctxPayload.SessionKey,
+        });
         replyReference.markSent();
+        logDeliveryProcessDebug("discord reply reference marked sent", {
+          deliverChannelId,
+          deliverTarget,
+          replyToId,
+          sessionKey: ctxPayload.SessionKey,
+        });
       },
       onError: (err, info) => {
         runtime.error?.(danger(`discord ${info.kind} reply failed: ${String(err)}`));

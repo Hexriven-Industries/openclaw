@@ -331,4 +331,36 @@ describe("messaging tool media URL tracking", () => {
     expect(ctx.state.messagingToolSentMediaUrls).toHaveLength(0);
     expect(ctx.state.pendingMessagingMediaUrls.has("tool-m3")).toBe(false);
   });
+
+  it("records successful non-messaging tool media deliveries for final-payload dedupe", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.onToolResult = vi.fn().mockResolvedValue(undefined);
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "process",
+      toolCallId: "tool-process-media",
+      args: { action: "poll", sessionId: "calm-reef" },
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "process",
+      toolCallId: "tool-process-media",
+      isError: false,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "MEDIA: /tmp/red-cube.png",
+          },
+        ],
+      },
+    });
+
+    expect(ctx.params.onToolResult).toHaveBeenCalledWith({
+      mediaUrls: ["/tmp/red-cube.png"],
+    });
+    expect(ctx.state.messagingToolSentMediaUrls).toContain("/tmp/red-cube.png");
+  });
 });

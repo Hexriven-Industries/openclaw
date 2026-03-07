@@ -441,6 +441,7 @@ export async function runAgentTurnWithFallback(params: {
                         params.pendingToolTasks.delete(task);
                       });
                       params.pendingToolTasks.add(task);
+                      return task;
                     };
                   })()
                 : undefined,

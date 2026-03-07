@@ -4,8 +4,10 @@ import type { ChunkMode } from "../../auto-reply/chunk.js";
 import type { ReplyPayload } from "../../auto-reply/types.js";
 import { loadConfig } from "../../config/config.js";
 import type { MarkdownTableMode, ReplyToMode } from "../../config/types.base.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { createDiscordRetryRunner, type RetryRunner } from "../../infra/retry-policy.js";
 import { resolveRetryConfig, retryAsync, type RetryConfig } from "../../infra/retry.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { convertMarkdownTables } from "../../markdown/tables.js";
 import type { RuntimeEnv } from "../../runtime.js";
 import { resolveDiscordAccount } from "../accounts.js";
@@ -28,6 +30,24 @@ export type DiscordThreadBindingLookup = {
 };
 
 type ResolvedRetryConfig = Required<RetryConfig>;
+type DiscordDeliveryReceipt = {
+  mode: "webhook" | "bot-text" | "bot-message" | "voice-message";
+  target: string;
+  replyTo?: string;
+  messageId?: string;
+  channelId?: string;
+  bindingThreadId?: string;
+  mediaUrl?: string;
+};
+
+const deliveryLog = createSubsystemLogger("discord/delivery-debug");
+
+function logDeliveryDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  deliveryLog.debug(message, meta);
+}
 
 const DISCORD_DELIVERY_RETRY_DEFAULTS: ResolvedRetryConfig = {
   attempts: 3,
@@ -141,15 +161,15 @@ async function sendDiscordChunkWithFallback(params: {
   request?: RetryRunner;
   /** Pre-resolved retry config (account-level). */
   retryConfig: ResolvedRetryConfig;
-}) {
+}): Promise<DiscordDeliveryReceipt | null> {
   if (!params.text.trim()) {
-    return;
+    return null;
   }
   const text = params.text;
   const binding = params.binding;
   if (binding?.webhookId && binding?.webhookToken) {
     try {
-      await sendWebhookMessageDiscord(text, {
+      const result = await sendWebhookMessageDiscord(text, {
         webhookId: binding.webhookId,
         webhookToken: binding.webhookToken,
         accountId: binding.accountId,
@@ -158,8 +178,23 @@ async function sendDiscordChunkWithFallback(params: {
         username: params.username,
         avatarUrl: params.avatarUrl,
       });
-      return;
-    } catch {
+      const receipt = {
+        mode: "webhook" as const,
+        target: params.target,
+        replyTo: params.replyTo,
+        messageId: result.messageId,
+        channelId: result.channelId,
+        bindingThreadId: binding.threadId,
+      };
+      logDeliveryDebug("discord delivery chunk sent", receipt);
+      return receipt;
+    } catch (err) {
+      logDeliveryDebug("discord delivery webhook failed; falling back", {
+        target: params.target,
+        replyTo: params.replyTo,
+        bindingThreadId: binding.threadId,
+        error: String(err),
+      });
       // Fall through to the standard bot sender path.
     }
   }
@@ -168,22 +203,52 @@ async function sendDiscordChunkWithFallback(params: {
   // that can cause ordering issues under queue contention or rate limiting.
   if (params.channelId && params.request && params.rest) {
     const { channelId, request, rest } = params;
-    await sendWithRetry(
-      () => sendDiscordText(rest, channelId, text, params.replyTo, request),
-      params.retryConfig,
-    );
-    return;
+    let result:
+      | {
+          id?: string | null;
+          channel_id?: string | null;
+        }
+      | undefined;
+    await sendWithRetry(async () => {
+      result = await sendDiscordText(rest, channelId, text, params.replyTo, request);
+      return result;
+    }, params.retryConfig);
+    const receipt = {
+      mode: "bot-text" as const,
+      target: params.target,
+      replyTo: params.replyTo,
+      messageId: result?.id ? String(result.id) : undefined,
+      channelId: result?.channel_id ? String(result.channel_id) : channelId,
+      bindingThreadId: binding?.threadId,
+    };
+    logDeliveryDebug("discord delivery chunk sent", receipt);
+    return receipt;
   }
-  await sendWithRetry(
-    () =>
-      sendMessageDiscord(params.target, text, {
-        token: params.token,
-        rest: params.rest,
-        accountId: params.accountId,
-        replyTo: params.replyTo,
-      }),
-    params.retryConfig,
-  );
+  let result:
+    | {
+        messageId: string;
+        channelId: string;
+      }
+    | undefined;
+  await sendWithRetry(async () => {
+    result = await sendMessageDiscord(params.target, text, {
+      token: params.token,
+      rest: params.rest,
+      accountId: params.accountId,
+      replyTo: params.replyTo,
+    });
+    return result;
+  }, params.retryConfig);
+  const receipt = {
+    mode: "bot-message" as const,
+    target: params.target,
+    replyTo: params.replyTo,
+    messageId: result?.messageId,
+    channelId: result?.channelId,
+    bindingThreadId: binding?.threadId,
+  };
+  logDeliveryDebug("discord delivery chunk sent", receipt);
+  return receipt;
 }
 
 async function sendAdditionalDiscordMedia(params: {
@@ -198,18 +263,31 @@ async function sendAdditionalDiscordMedia(params: {
 }) {
   for (const mediaUrl of params.mediaUrls) {
     const replyTo = params.resolveReplyTo();
-    await sendWithRetry(
-      () =>
-        sendMessageDiscord(params.target, "", {
-          token: params.token,
-          rest: params.rest,
-          mediaUrl,
-          accountId: params.accountId,
-          mediaLocalRoots: params.mediaLocalRoots,
-          replyTo,
-        }),
-      params.retryConfig,
-    );
+    let result:
+      | {
+          messageId: string;
+          channelId: string;
+        }
+      | undefined;
+    await sendWithRetry(async () => {
+      result = await sendMessageDiscord(params.target, "", {
+        token: params.token,
+        rest: params.rest,
+        mediaUrl,
+        accountId: params.accountId,
+        mediaLocalRoots: params.mediaLocalRoots,
+        replyTo,
+      });
+      return result;
+    }, params.retryConfig);
+    logDeliveryDebug("discord delivery media sent", {
+      mode: "bot-message",
+      target: params.target,
+      replyTo,
+      mediaUrl,
+      messageId: result?.messageId,
+      channelId: result?.channelId,
+    });
   }
 }
 
@@ -270,6 +348,17 @@ export async function deliverDiscordReply(params: {
     const rawText = payload.text ?? "";
     const tableMode = params.tableMode ?? "code";
     const text = convertMarkdownTables(rawText, tableMode);
+    logDeliveryDebug("discord delivery payload begin", {
+      target: params.target,
+      sessionKey: params.sessionKey,
+      replyToId: params.replyToId,
+      replyToMode,
+      bindingThreadId: binding?.threadId,
+      bindingWebhook: Boolean(binding?.webhookId && binding?.webhookToken),
+      textLength: text.length,
+      mediaCount: mediaList.length,
+      audioAsVoice: Boolean(payload.audioAsVoice),
+    });
     if (!text && mediaList.length === 0) {
       continue;
     }
@@ -283,6 +372,11 @@ export async function deliverDiscordReply(params: {
       if (!chunks.length && text) {
         chunks.push(text);
       }
+      logDeliveryDebug("discord delivery payload text split", {
+        target: params.target,
+        chunkCount: chunks.length,
+        chunkMode: mode,
+      });
       for (const chunk of chunks) {
         if (!chunk.trim()) {
           continue;
@@ -315,11 +409,19 @@ export async function deliverDiscordReply(params: {
     // Voice message path: audioAsVoice flag routes through sendVoiceMessageDiscord.
     if (payload.audioAsVoice) {
       const replyTo = resolveReplyTo();
-      await sendVoiceMessageDiscord(params.target, firstMedia, {
+      const result = await sendVoiceMessageDiscord(params.target, firstMedia, {
         token: params.token,
         rest: params.rest,
         accountId: params.accountId,
         replyTo,
+      });
+      logDeliveryDebug("discord delivery voice sent", {
+        mode: "voice-message",
+        target: params.target,
+        replyTo,
+        mediaUrl: firstMedia,
+        messageId: result.messageId,
+        channelId: result.channelId,
       });
       deliveredAny = true;
       // Voice messages cannot include text; send remaining text separately if present.
@@ -352,13 +454,22 @@ export async function deliverDiscordReply(params: {
     }
 
     const replyTo = resolveReplyTo();
-    await sendMessageDiscord(params.target, text, {
+    const result = await sendMessageDiscord(params.target, text, {
       token: params.token,
       rest: params.rest,
       mediaUrl: firstMedia,
       accountId: params.accountId,
       mediaLocalRoots: params.mediaLocalRoots,
       replyTo,
+    });
+    logDeliveryDebug("discord delivery primary media sent", {
+      mode: "bot-message",
+      target: params.target,
+      replyTo,
+      mediaUrl: firstMedia,
+      textLength: text.length,
+      messageId: result.messageId,
+      channelId: result.channelId,
     });
     deliveredAny = true;
     await sendAdditionalDiscordMedia({
@@ -376,4 +487,10 @@ export async function deliverDiscordReply(params: {
   if (binding && deliveredAny) {
     params.threadBindings?.touchThread?.({ threadId: binding.threadId });
   }
+  logDeliveryDebug("discord delivery payload end", {
+    target: params.target,
+    sessionKey: params.sessionKey,
+    deliveredAny,
+    bindingThreadId: binding?.threadId,
+  });
 }

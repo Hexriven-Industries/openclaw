@@ -2,11 +2,50 @@ import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createInlineCodeState } from "../markdown/code-spans.js";
 import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+
+function normalizeMediaUrlForDedupe(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!trimmed.toLowerCase().startsWith("file://")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "file:") {
+      return decodeURIComponent(parsed.pathname || "");
+    }
+  } catch {
+    // Fall through to legacy normalization for malformed file URLs.
+  }
+  return trimmed.replace(/^file:\/\//i, "");
+}
+
+export function filterAlreadySentBlockReplyMediaUrls(params: {
+  mediaUrls?: string[];
+  sentMediaUrls: string[];
+}): string[] | undefined {
+  const mediaUrls = params.mediaUrls?.filter(Boolean) ?? [];
+  if (mediaUrls.length === 0) {
+    return undefined;
+  }
+  if (params.sentMediaUrls.length === 0) {
+    return mediaUrls;
+  }
+  const sentSet = new Set(
+    params.sentMediaUrls.map((value) => normalizeMediaUrlForDedupe(value)).filter(Boolean),
+  );
+  const filtered = mediaUrls.filter((value) => !sentSet.has(normalizeMediaUrlForDedupe(value)));
+  return filtered.length > 0 ? filtered : undefined;
+}
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { appendRawStream } from "./pi-embedded-subscribe.raw-stream.js";
 import {
@@ -17,6 +56,15 @@ import {
   formatReasoningMessage,
   promoteThinkingTagsToBlocks,
 } from "./pi-embedded-utils.js";
+
+const deliveryStateLog = createSubsystemLogger("agent/messaging-delivery-debug");
+
+function logDeliveryStateDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  deliveryStateLog.debug(message, meta);
+}
 
 const stripTrailingDirective = (text: string): string => {
   const openIndex = text.lastIndexOf("[[");
@@ -51,8 +99,16 @@ export function resolveSilentReplyFallbackText(params: {
   }
   const fallback = params.messagingToolSentTexts.at(-1)?.trim();
   if (!fallback) {
+    logDeliveryStateDebug("silent reply fallback unavailable", {
+      text: params.text,
+      messagingToolSentTextCount: params.messagingToolSentTexts.length,
+    });
     return params.text;
   }
+  logDeliveryStateDebug("silent reply fallback resolved from messaging tool text", {
+    fallbackLength: fallback.length,
+    messagingToolSentTextCount: params.messagingToolSentTexts.length,
+  });
   return fallback;
 }
 
@@ -360,11 +416,15 @@ export function handleMessageEnd(
       replyToTag,
       replyToCurrent,
     } = splitResult;
+    const dedupedMediaUrls = filterAlreadySentBlockReplyMediaUrls({
+      mediaUrls,
+      sentMediaUrls: ctx.state.messagingToolSentMediaUrls,
+    });
     // Emit if there's content OR audioAsVoice flag (to propagate the flag).
-    if (cleanedText || (mediaUrls && mediaUrls.length > 0) || audioAsVoice) {
+    if (cleanedText || (dedupedMediaUrls && dedupedMediaUrls.length > 0) || audioAsVoice) {
       void onBlockReply({
         text: cleanedText,
-        mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
+        mediaUrls: dedupedMediaUrls,
         audioAsVoice,
         replyToId,
         replyToTag,

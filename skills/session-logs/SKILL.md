@@ -1,16 +1,29 @@
 ---
 name: session-logs
-description: Search and analyze your own session logs (older/parent conversations) using jq.
+description: Inspect older/parent conversations using session tools first, with jq-based log archaeology only as fallback.
 metadata: { "openclaw": { "emoji": "📜", "requires": { "bins": ["jq", "rg"] } } }
 ---
 
 # session-logs
 
-Search your complete conversation history stored in session JSONL files. Use this when a user references older/parent conversations or asks what was said before.
+Inspect older or parent conversations when a user asks what was said before. Prefer structured tools first; only fall back to raw session-log archaeology when the built-in tools cannot answer the question.
+
+Never start with shell pipelines for routine recall when `sessions_history`, `sessions_list`, or `memory_search` can answer the question.
 
 ## Trigger
 
-Use this skill when the user asks about prior chats, parent conversations, or historical context that isn't in memory files.
+Use this skill when the user asks about prior chats, parent conversations, or historical context that is not already answered by memory files.
+
+## Default Order
+
+Always use these lanes in order:
+
+1. `sessions_list` to find the relevant session key/session id.
+2. `sessions_history` to fetch the transcript you need.
+3. `memory_search` / `memory_get` for durable recall from `MEMORY.md` + `memory/*.md`.
+4. Raw shell archaeology (`jq`, `rg`, `grep`, loops over `.jsonl`) only when the structured tools truly cannot answer the question.
+
+Do not jump straight to `exec` for routine session recall if `sessions_list` / `sessions_history` can answer it.
 
 ## Location
 
@@ -18,6 +31,25 @@ Session logs live at: `~/.openclaw/agents/<agentId>/sessions/` (use the `agent=<
 
 - **`sessions.json`** - Index mapping session keys to session IDs
 - **`<session-id>.jsonl`** - Full conversation transcript per session
+
+## Preferred Structured Queries
+
+### Find likely sessions first
+
+Use `sessions_list` with a small limit and, when useful, recency filters to identify the right conversation.
+
+### Pull the transcript you actually need
+
+Use `sessions_history` on the selected `sessionKey` or `sessionId` and keep the limit narrow. Expand only if the first pull is insufficient.
+
+### Use memory for durable recall
+
+If the question is about long-term preferences, decisions, identity, or prior work that should live in memory files, prefer:
+
+- `memory_search`
+- then `memory_get`
+
+This keeps context smaller and avoids transcript archaeology when the answer is already in memory.
 
 ## Structure
 
@@ -29,7 +61,11 @@ Each `.jsonl` file contains messages with:
 - `message.content[]`: Text, thinking, or tool calls (filter `type=="text"` for human-readable content)
 - `message.usage.cost.total`: Cost per response
 
-## Common Queries
+## Fallback Log Archaeology
+
+Only use the shell recipes below when `sessions_list` / `sessions_history` cannot answer the question or when you explicitly need raw JSONL inspection.
+
+## Common Fallback Queries
 
 ### List all sessions by date and size
 

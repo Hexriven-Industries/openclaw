@@ -2,6 +2,10 @@ import fs from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  enqueueAsyncExecMediaFromOutput,
+  resetAsyncExecMediaForTest,
+} from "../../agents/async-exec-media.js";
 import type { SessionEntry } from "../../config/sessions.js";
 import * as sessions from "../../config/sessions.js";
 import type { TypingMode } from "../../config/types.js";
@@ -96,6 +100,7 @@ beforeEach(() => {
   vi.mocked(enqueueFollowupRun).mockClear();
   vi.mocked(scheduleFollowupDrain).mockClear();
   vi.stubEnv("OPENCLAW_TEST_FAST", "1");
+  resetAsyncExecMediaForTest();
 });
 
 function createMinimalRun(params?: {
@@ -670,6 +675,23 @@ describe("runReplyAgent typing (heartbeat)", () => {
 
     expect(onToolResult).toHaveBeenCalledTimes(2);
     expect(delivered).toEqual(["second"]);
+  });
+
+  it("flushes queued async exec media through onToolResult before the agent speaks", async () => {
+    enqueueAsyncExecMediaFromOutput({
+      sessionKey: "main",
+      output: "MEDIA: /tmp/red-cube.png",
+    });
+    const onToolResult = vi.fn(async () => {});
+    state.runEmbeddedPiAgentMock.mockResolvedValueOnce({ payloads: [{ text: "final" }], meta: {} });
+
+    const { run } = createMinimalRun({
+      typingMode: "message",
+      opts: { onToolResult },
+    });
+    await run();
+
+    expect(onToolResult).toHaveBeenCalledWith({ mediaUrls: ["/tmp/red-cube.png"] });
   });
 
   it("announces auto-compaction in verbose mode and tracks count", async () => {

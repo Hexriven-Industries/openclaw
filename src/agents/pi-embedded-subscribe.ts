@@ -3,6 +3,7 @@ import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { createStreamingDirectiveAccumulator } from "../auto-reply/reply/streaming-directives.js";
 import { formatToolAggregate } from "../auto-reply/tool-meta.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { isTruthyEnvValue } from "../infra/env.js";
 import { createSubsystemLogger } from "../logging/subsystem.js";
 import type { InlineCodeState } from "../markdown/code-spans.js";
 import { buildCodeSpanIndex, createInlineCodeState } from "../markdown/code-spans.js";
@@ -24,6 +25,7 @@ import { hasNonzeroUsage, normalizeUsage, type UsageLike } from "./usage.js";
 const THINKING_TAG_SCAN_RE = /<\s*(\/?)\s*(?:think(?:ing)?|thought|antthinking)\s*>/gi;
 const FINAL_TAG_SCAN_RE = /<\s*(\/?)\s*final\s*>/gi;
 const log = createSubsystemLogger("agent/embedded");
+const deliveryStateLog = createSubsystemLogger("agent/messaging-delivery-debug");
 
 export type {
   BlockReplyChunking,
@@ -32,6 +34,13 @@ export type {
 } from "./pi-embedded-subscribe.types.js";
 
 export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionParams) {
+  const deliveryDebugEnabled = isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG);
+  const logDeliveryStateDebug = (message: string, meta?: Record<string, unknown>) => {
+    if (!deliveryDebugEnabled) {
+      return;
+    }
+    deliveryStateLog.debug(message, meta);
+  };
   const reasoningMode = params.reasoningMode ?? "off";
   const toolResultFormat = params.toolResultFormat ?? "markdown";
   const useMarkdown = toolResultFormat === "markdown";
@@ -481,6 +490,13 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     const normalizedChunk = normalizeTextForComparison(chunk);
     if (isMessagingToolDuplicateNormalized(normalizedChunk, messagingToolSentTextsNormalized)) {
       log.debug(`Skipping block reply - already sent via messaging tool: ${chunk.slice(0, 50)}...`);
+      logDeliveryStateDebug("assistant block reply suppressed as messaging duplicate", {
+        runId: params.runId,
+        chunkPreview: chunk.slice(0, 120),
+        committedTextCount: messagingToolSentTexts.length,
+        committedTargetCount: messagingToolSentTargets.length,
+        committedMediaCount: messagingToolSentMediaUrls.length,
+      });
       return;
     }
 
@@ -675,7 +691,17 @@ export function subscribeEmbeddedPiSession(params: SubscribeEmbeddedPiSessionPar
     // Returns true if any messaging tool successfully sent a message.
     // Used to suppress agent's confirmation text (e.g., "Respondi no Telegram!")
     // which is generated AFTER the tool sends the actual answer.
-    didSendViaMessagingTool: () => messagingToolSentTexts.length > 0,
+    didSendViaMessagingTool: () => {
+      const didSend = messagingToolSentTexts.length > 0;
+      logDeliveryStateDebug("didSendViaMessagingTool evaluated", {
+        runId: params.runId,
+        didSend,
+        committedTextCount: messagingToolSentTexts.length,
+        committedTargetCount: messagingToolSentTargets.length,
+        committedMediaCount: messagingToolSentMediaUrls.length,
+      });
+      return didSend;
+    },
     getLastToolError: () => (state.lastToolError ? { ...state.lastToolError } : undefined),
     getUsageTotals,
     getCompactionCount: () => compactionCount,

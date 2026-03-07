@@ -50,6 +50,11 @@ function buildMemorySection(params: {
     "## Memory Recall",
     "Before answering anything about prior work, decisions, dates, people, preferences, or todos: run memory_search on MEMORY.md + memory/*.md; then use memory_get to pull only the needed lines. If low confidence after search, say you checked.",
   ];
+  if (params.availableTools.has("sessions_history")) {
+    lines.push(
+      "For recent prior conversation recall (for example, what was concluded in a previous chat or thread), use sessions_history first. Use raw exec or shell archaeology only if sessions_history and memory tools cannot answer the question.",
+    );
+  }
   if (params.citationsMode === "off") {
     lines.push(
       "Citations are disabled: do not mention file paths or line numbers in replies unless the user explicitly asks.",
@@ -274,6 +279,9 @@ export function buildAgentSystemPrompt(params: {
     agents_list: acpSpawnRuntimeEnabled
       ? 'List OpenClaw agent ids allowed for sessions_spawn when runtime="subagent" (not ACP harness ids)'
       : "List OpenClaw agent ids allowed for sessions_spawn",
+    memory_search:
+      "Search MEMORY.md + memory/*.md for durable recall about prior work, preferences, decisions, and dates",
+    memory_get: "Read only the needed lines from a memory file after memory_search",
     sessions_list: "List other sessions (incl. sub-agents) with filters/last",
     sessions_history: "Fetch history for another session/sub-agent",
     sessions_send: "Send a message to another session/sub-agent",
@@ -305,6 +313,8 @@ export function buildAgentSystemPrompt(params: {
     "message",
     "gateway",
     "agents_list",
+    "memory_search",
+    "memory_get",
     "sessions_list",
     "sessions_history",
     "sessions_send",

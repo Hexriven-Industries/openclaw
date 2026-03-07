@@ -1,7 +1,9 @@
 import { randomBytes } from "node:crypto";
 import fs from "node:fs/promises";
 import type { ThinkLevel } from "../../auto-reply/thinking.js";
+import { isTruthyEnvValue } from "../../infra/env.js";
 import { generateSecureToken } from "../../infra/secure-random.js";
+import { createSubsystemLogger } from "../../logging/subsystem.js";
 import { getGlobalHookRunner } from "../../plugins/hook-runner-global.js";
 import type { PluginHookBeforeAgentStartResult } from "../../plugins/types.js";
 import { enqueueCommandInLane } from "../../process/command-queue.js";
@@ -1313,6 +1315,16 @@ export async function runEmbeddedPiAgent(
             inlineToolResultsAllowed: false,
             didSendViaMessagingTool: attempt.didSendViaMessagingTool,
           });
+          logDeliveryRunDebug("embedded run payload summary", {
+            runId: params.runId,
+            sessionId: params.sessionId,
+            payloadCount: payloads.length,
+            didSendViaMessagingTool: attempt.didSendViaMessagingTool,
+            messagingToolSentTextCount: attempt.messagingToolSentTexts.length,
+            messagingToolSentMediaCount: attempt.messagingToolSentMediaUrls.length,
+            messagingToolSentTargetCount: attempt.messagingToolSentTargets.length,
+            lastToolError: attempt.lastToolError?.toolName,
+          });
 
           // Timeout aborts can leave the run without any assistant payloads.
           // Emit an explicit timeout error instead of silently completing, so
@@ -1393,4 +1405,12 @@ export async function runEmbeddedPiAgent(
       }
     }),
   );
+}
+const deliveryDebugLog = createSubsystemLogger("agent/messaging-delivery-debug");
+
+function logDeliveryRunDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  deliveryDebugLog.debug(message, meta);
 }
