@@ -88,6 +88,37 @@ describe("handleToolExecutionStart read path checks", () => {
     expect(warn).toHaveBeenCalledTimes(1);
     expect(String(warn.mock.calls[0]?.[0] ?? "")).toContain("read tool called without path");
   });
+
+  it("awaits onBlockReplyFlush before continuing tool start processing", async () => {
+    const { ctx, onBlockReplyFlush } = createTestContext();
+    let releaseFlush: (() => void) | undefined;
+    onBlockReplyFlush.mockImplementation(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseFlush = resolve;
+        }),
+    );
+
+    const evt: ToolExecutionStartEvent = {
+      type: "tool_execution_start",
+      toolName: "exec",
+      toolCallId: "tool-await-flush",
+      args: { command: "echo hi" },
+    };
+
+    const pending = handleToolExecutionStart(ctx, evt);
+    // Let the async function reach the awaited flush Promise.
+    await Promise.resolve();
+
+    // If flush isn't awaited, tool metadata would already be recorded here.
+    expect(ctx.state.toolMetaById.has("tool-await-flush")).toBe(false);
+    expect(releaseFlush).toBeTypeOf("function");
+
+    releaseFlush?.();
+    await pending;
+
+    expect(ctx.state.toolMetaById.has("tool-await-flush")).toBe(true);
+  });
 });
 
 describe("handleToolExecutionEnd cron.add commitment tracking", () => {
@@ -299,5 +330,37 @@ describe("messaging tool media URL tracking", () => {
 
     expect(ctx.state.messagingToolSentMediaUrls).toHaveLength(0);
     expect(ctx.state.pendingMessagingMediaUrls.has("tool-m3")).toBe(false);
+  });
+
+  it("records successful non-messaging tool media deliveries for final-payload dedupe", async () => {
+    const { ctx } = createTestContext();
+    ctx.params.onToolResult = vi.fn().mockResolvedValue(undefined);
+
+    await handleToolExecutionStart(ctx, {
+      type: "tool_execution_start",
+      toolName: "process",
+      toolCallId: "tool-process-media",
+      args: { action: "poll", sessionId: "calm-reef" },
+    });
+
+    await handleToolExecutionEnd(ctx, {
+      type: "tool_execution_end",
+      toolName: "process",
+      toolCallId: "tool-process-media",
+      isError: false,
+      result: {
+        content: [
+          {
+            type: "text",
+            text: "MEDIA: /tmp/red-cube.png",
+          },
+        ],
+      },
+    });
+
+    expect(ctx.params.onToolResult).toHaveBeenCalledWith({
+      mediaUrls: ["/tmp/red-cube.png"],
+    });
+    expect(ctx.state.messagingToolSentMediaUrls).toContain("/tmp/red-cube.png");
   });
 });

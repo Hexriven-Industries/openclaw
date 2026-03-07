@@ -16,20 +16,6 @@ function createMockSpawnChild() {
   return { child, stdout };
 }
 
-type MockSpawnChild = EventEmitter & {
-  stdout?: EventEmitter & { setEncoding?: (enc: string) => void };
-  kill?: (signal?: string) => void;
-};
-
-function createMockSpawnChild() {
-  const child = new EventEmitter() as MockSpawnChild;
-  const stdout = new EventEmitter() as MockSpawnChild["stdout"];
-  stdout!.setEncoding = vi.fn();
-  child.stdout = stdout;
-  child.kill = vi.fn();
-  return { child, stdout };
-}
-
 vi.mock("node:child_process", () => {
   const spawn = vi.fn(() => {
     const { child, stdout } = createMockSpawnChild();

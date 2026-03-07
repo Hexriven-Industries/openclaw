@@ -1,4 +1,5 @@
-import type { OpenClawPlugin } from "../../src/plugins/types.js";
+import type { AgentMessage } from "@mariozechner/pi-agent-core";
+import type { OpenClawPluginDefinition } from "../../src/plugins/types.js";
 
 /**
  * Tool Response Limiter Plugin
@@ -18,6 +19,10 @@ type PluginConfig = {
   exemptTools?: string[];
 };
 
+type ToolResultMessage = Extract<AgentMessage, { role: "toolResult" }>;
+type TextBlock = Extract<ToolResultMessage["content"][number], { type: "text" }>;
+type PluginLogger = { info: (message: string) => void };
+
 /**
  * Serialize a message to JSON and get its byte size
  */
@@ -32,39 +37,34 @@ function getMessageSize(message: unknown): number {
 /**
  * Truncate message content to fit within size limit
  */
-function truncateMessage(message: any, maxBytes: number, originalSize: number): any {
+function truncateMessage(
+  message: ToolResultMessage,
+  maxBytes: number,
+  originalSize: number,
+): ToolResultMessage {
   const truncationMessage = `[Response truncated from ${formatBytes(originalSize)} to ~${formatBytes(maxBytes)}]`;
 
   // Try to preserve the message structure while truncating content
   const truncated = { ...message };
 
   // If there's text content, truncate it
-  if (truncated.content && Array.isArray(truncated.content)) {
-    const textBlocks = truncated.content.filter((c: any) => c.type === "text");
-    if (textBlocks.length > 0) {
-      // Calculate overhead size (everything except text content)
-      const nonTextContent = truncated.content.filter((c: any) => c.type !== "text");
-      const overhead = getMessageSize({ ...truncated, content: nonTextContent });
-      const availableForText = Math.max(0, maxBytes - overhead - truncationMessage.length - 100); // 100 byte buffer
+  const textBlocks = truncated.content.filter((c): c is TextBlock => c.type === "text");
+  if (textBlocks.length > 0) {
+    const nonTextContent = truncated.content.filter((c) => c.type !== "text");
+    const overhead = getMessageSize({ ...truncated, content: nonTextContent });
+    const availableForText = Math.max(0, maxBytes - overhead - truncationMessage.length - 100); // 100 byte buffer
 
-      // Truncate the first text block
-      const firstText = textBlocks[0];
-      const truncatedText = firstText.text.substring(0, availableForText);
+    // Truncate the first text block
+    const firstText = textBlocks[0];
+    const truncatedText = firstText.text.substring(0, availableForText);
 
-      truncated.content = [
-        ...nonTextContent,
-        {
-          type: "text",
-          text: truncatedText + "\n\n" + truncationMessage,
-        },
-      ];
-    }
-  } else if (typeof truncated.content === "string") {
-    // Handle simple string content
-    const overhead = getMessageSize({ ...truncated, content: "" });
-    const availableForText = Math.max(0, maxBytes - overhead - truncationMessage.length - 100);
-    truncated.content =
-      truncated.content.substring(0, availableForText) + "\n\n" + truncationMessage;
+    truncated.content = [
+      ...nonTextContent,
+      {
+        type: "text",
+        text: truncatedText + "\n\n" + truncationMessage,
+      },
+    ];
   }
 
   // Remove or truncate large details objects
@@ -87,55 +87,63 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-const plugin: OpenClawPlugin = {
-  id: "tool-response-limiter",
+function isToolResultMessage(message: AgentMessage): message is ToolResultMessage {
+  return message.role === "toolResult";
+}
 
-  register(api) {
-    const config = (api.getConfig?.() || {}) as PluginConfig;
-    const logger = api.logger;
+export function createToolResponseLimiterTransform(config: PluginConfig, logger: PluginLogger) {
+  const enabled = config.enabled !== false;
+  const maxResponseSizeKb = config.maxResponseSizeKb || 30;
+  const exemptTools = new Set(config.exemptTools || []);
+  const maxBytes = maxResponseSizeKb * 1024;
 
-    // Default configuration
-    const enabled = config.enabled !== false;
-    const maxResponseSizeKb = config.maxResponseSizeKb || 30;
-    const exemptTools = new Set(config.exemptTools || []);
-    const maxBytes = maxResponseSizeKb * 1024;
+  if (!enabled) {
+    logger.info("[tool-response-limiter] Plugin is disabled");
+    return undefined;
+  }
 
-    if (!enabled) {
-      logger.info("[tool-response-limiter] Plugin is disabled");
+  logger.info(
+    `[tool-response-limiter] Registered with ${maxResponseSizeKb}KB limit` +
+      (exemptTools.size > 0 ? `, exempt tools: ${Array.from(exemptTools).join(", ")}` : ""),
+  );
+
+  return (event: { toolName?: string; message: AgentMessage }) => {
+    const { toolName, message } = event;
+    if (!isToolResultMessage(message)) {
+      return;
+    }
+    if (toolName && exemptTools.has(toolName)) {
       return;
     }
 
-    logger.info(
-      `[tool-response-limiter] Registered with ${maxResponseSizeKb}KB limit` +
-        (exemptTools.size > 0 ? `, exempt tools: ${Array.from(exemptTools).join(", ")}` : ""),
-    );
+    const messageSize = getMessageSize(message);
+    if (messageSize > maxBytes) {
+      logger.info(
+        `[tool-response-limiter] Truncating ${toolName || "unknown"} response: ` +
+          `${formatBytes(messageSize)} -> ${formatBytes(maxBytes)}`,
+      );
+      return {
+        message: truncateMessage(message, maxBytes, messageSize),
+      };
+    }
+    return;
+  };
+}
+
+const plugin: OpenClawPluginDefinition = {
+  id: "tool-response-limiter",
+
+  register(api) {
+    const config = (api.pluginConfig ?? {}) as PluginConfig;
+    const transform = createToolResponseLimiterTransform(config, api.logger);
+    if (!transform) {
+      return;
+    }
 
     api.on(
       "tool_result_persist",
-      (event, _ctx) => {
-        const { toolName, message } = event;
-
-        // Skip if tool is exempt
-        if (toolName && exemptTools.has(toolName)) {
-          return;
-        }
-
-        // Check message size
-        const messageSize = getMessageSize(message);
-
-        if (messageSize > maxBytes) {
-          logger.info(
-            `[tool-response-limiter] Truncating ${toolName || "unknown"} response: ` +
-              `${formatBytes(messageSize)} -> ${formatBytes(maxBytes)}`,
-          );
-
-          return {
-            message: truncateMessage(message, maxBytes, messageSize),
-          };
-        }
-
-        // No modification needed
-        return;
+      (event) => {
+        return transform(event);
       },
       { priority: 100 }, // High priority to run before other transforms
     );

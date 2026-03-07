@@ -3,6 +3,7 @@ import { resolvePluginTools } from "../plugins/tools.js";
 import type { GatewayMessageChannel } from "../utils/message-channel.js";
 import { resolveSessionAgentId } from "./agent-scope.js";
 import type { SandboxFsBridge } from "./sandbox/fs-bridge.js";
+import type { ToolFsPolicy } from "./tool-fs-policy.js";
 import { createAgentsListTool } from "./tools/agents-list-tool.js";
 import { createBrowserTool } from "./tools/browser-tool.js";
 import { createCanvasTool } from "./tools/canvas-tool.js";
@@ -10,8 +11,10 @@ import type { AnyAgentTool } from "./tools/common.js";
 import { createCronTool } from "./tools/cron-tool.js";
 import { createGatewayTool } from "./tools/gateway-tool.js";
 import { createImageTool } from "./tools/image-tool.js";
+import { createMemoryGetTool, createMemorySearchTool } from "./tools/memory-tool.js";
 import { createMessageTool } from "./tools/message-tool.js";
 import { createNodesTool } from "./tools/nodes-tool.js";
+import { createPdfTool } from "./tools/pdf-tool.js";
 import { createSessionStatusTool } from "./tools/session-status-tool.js";
 import { createSessionsHistoryTool } from "./tools/sessions-history-tool.js";
 import { createSessionsListTool } from "./tools/sessions-list-tool.js";
@@ -41,6 +44,7 @@ export function createOpenClawTools(options?: {
   agentDir?: string;
   sandboxRoot?: string;
   sandboxFsBridge?: SandboxFsBridge;
+  fsPolicy?: ToolFsPolicy;
   workspaceDir?: string;
   sandboxed?: boolean;
   config?: OpenClawConfig;
@@ -49,12 +53,16 @@ export function createOpenClawTools(options?: {
   currentChannelId?: string;
   /** Current thread timestamp for auto-threading (Slack). */
   currentThreadTs?: string;
+  /** Current inbound message id for action fallbacks (e.g. Telegram react). */
+  currentMessageId?: string | number;
   /** Reply-to mode for Slack auto-threading. */
   replyToMode?: "off" | "first" | "all";
   /** Mutable ref to track if a reply was sent (for "first" mode). */
   hasRepliedRef?: { value: boolean };
   /** If true, the model has native vision capability */
   modelHasVision?: boolean;
+  /** If true, nodes action="invoke" can call media-returning commands directly. */
+  allowMediaInvokeCommands?: boolean;
   /** Explicit agent ID override for cron/hook sessions. */
   requesterAgentIdOverride?: string;
   /** Require explicit message targets (no implicit last-route sends). */
@@ -65,6 +73,8 @@ export function createOpenClawTools(options?: {
   requesterSenderId?: string | null;
   /** Whether the requesting sender is an owner. */
   senderIsOwner?: boolean;
+  /** Ephemeral session UUID — regenerated on /new and /reset. */
+  sessionId?: string;
 }): AnyAgentTool[] {
   const workspaceDir = resolveWorkspaceRoot(options?.workspaceDir);
   const imageTool = options?.agentDir?.trim()
@@ -76,7 +86,20 @@ export function createOpenClawTools(options?: {
           options?.sandboxRoot && options?.sandboxFsBridge
             ? { root: options.sandboxRoot, bridge: options.sandboxFsBridge }
             : undefined,
+        fsPolicy: options?.fsPolicy,
         modelHasVision: options?.modelHasVision,
+      })
+    : null;
+  const pdfTool = options?.agentDir?.trim()
+    ? createPdfTool({
+        config: options?.config,
+        agentDir: options.agentDir,
+        workspaceDir,
+        sandbox:
+          options?.sandboxRoot && options?.sandboxFsBridge
+            ? { root: options.sandboxRoot, bridge: options.sandboxFsBridge }
+            : undefined,
+        fsPolicy: options?.fsPolicy,
       })
     : null;
   const webSearchTool = createWebSearchTool({
@@ -87,6 +110,14 @@ export function createOpenClawTools(options?: {
     config: options?.config,
     sandboxed: options?.sandboxed,
   });
+  const memorySearchTool = createMemorySearchTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
+  const memoryGetTool = createMemoryGetTool({
+    config: options?.config,
+    agentSessionKey: options?.agentSessionKey,
+  });
   const messageTool = options?.disableMessageTool
     ? null
     : createMessageTool({
@@ -96,6 +127,7 @@ export function createOpenClawTools(options?: {
         currentChannelId: options?.currentChannelId,
         currentChannelProvider: options?.agentChannel,
         currentThreadTs: options?.currentThreadTs,
+        currentMessageId: options?.currentMessageId,
         replyToMode: options?.replyToMode,
         hasRepliedRef: options?.hasRepliedRef,
         sandboxRoot: options?.sandboxRoot,
@@ -106,11 +138,18 @@ export function createOpenClawTools(options?: {
     createBrowserTool({
       sandboxBridgeUrl: options?.sandboxBrowserBridgeUrl,
       allowHostControl: options?.allowHostBrowserControl,
+      agentSessionKey: options?.agentSessionKey,
     }),
     createCanvasTool({ config: options?.config }),
     createNodesTool({
       agentSessionKey: options?.agentSessionKey,
+      agentChannel: options?.agentChannel,
+      agentAccountId: options?.agentAccountId,
+      currentChannelId: options?.currentChannelId,
+      currentThreadTs: options?.currentThreadTs,
       config: options?.config,
+      modelHasVision: options?.modelHasVision,
+      allowMediaInvokeCommands: options?.allowMediaInvokeCommands,
     }),
     createCronTool({
       agentSessionKey: options?.agentSessionKey,
@@ -128,6 +167,8 @@ export function createOpenClawTools(options?: {
       agentSessionKey: options?.agentSessionKey,
       requesterAgentIdOverride: options?.requesterAgentIdOverride,
     }),
+    ...(memorySearchTool ? [memorySearchTool] : []),
+    ...(memoryGetTool ? [memoryGetTool] : []),
     createSessionsListTool({
       agentSessionKey: options?.agentSessionKey,
       sandboxed: options?.sandboxed,
@@ -163,6 +204,7 @@ export function createOpenClawTools(options?: {
     ...(webSearchTool ? [webSearchTool] : []),
     ...(webFetchTool ? [webFetchTool] : []),
     ...(imageTool ? [imageTool] : []),
+    ...(pdfTool ? [pdfTool] : []),
   ];
 
   const pluginTools = resolvePluginTools({
@@ -175,8 +217,11 @@ export function createOpenClawTools(options?: {
         config: options?.config,
       }),
       sessionKey: options?.agentSessionKey,
+      sessionId: options?.sessionId,
       messageChannel: options?.agentChannel,
       agentAccountId: options?.agentAccountId,
+      requesterSenderId: options?.requesterSenderId ?? undefined,
+      senderIsOwner: options?.senderIsOwner ?? undefined,
       sandboxed: options?.sandboxed,
     },
     existingToolNames: new Set(tools.map((tool) => tool.name)),
