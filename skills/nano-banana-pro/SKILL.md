@@ -27,6 +27,13 @@ metadata:
 
 Use the bundled script to generate or edit images.
 
+Execution rule
+
+- If this skill is visible to you, assume the bundled script path is valid and use it directly.
+- Do not run `find`, `pwd`, `whoami`, `printenv`, `echo $HOME`, or similar shell-debugging commands just to rediscover the skill path or environment.
+- Do not search the filesystem for `generate_image.py`.
+- Use the bundled command shape below first. Only debug if the direct invocation actually fails.
+
 Generate
 
 ```bash
@@ -56,3 +63,4 @@ Notes
 - Use timestamps in filenames: `yyyy-mm-dd-hh-mm-ss-name.png`.
 - The script prints a `MEDIA:` line for OpenClaw to auto-attach on supported chat providers.
 - Do not read the image back; report the saved path only.
+- Prefer one direct run of `uv run {baseDir}/scripts/generate_image.py ...` over environment inspection.
