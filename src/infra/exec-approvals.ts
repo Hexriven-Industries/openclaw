@@ -1,6 +1,7 @@
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
+import { resolveStateDir } from "../config/paths.js";
 import { DEFAULT_AGENT_ID } from "../routing/session-key.js";
 import { expandHomePrefix } from "./home-dir.js";
 import { requestJsonlSocket } from "./jsonl-socket.js";
@@ -117,8 +118,7 @@ const DEFAULT_SECURITY: ExecSecurity = "deny";
 const DEFAULT_ASK: ExecAsk = "on-miss";
 const DEFAULT_ASK_FALLBACK: ExecSecurity = "deny";
 const DEFAULT_AUTO_ALLOW_SKILLS = false;
-const DEFAULT_SOCKET = "~/.openclaw/exec-approvals.sock";
-const DEFAULT_FILE = "~/.openclaw/exec-approvals.json";
+const LEGACY_DEFAULT_FILE = "~/.openclaw/exec-approvals.json";
 
 function hashExecApprovalsRaw(raw: string | null): string {
   return crypto
@@ -128,11 +128,15 @@ function hashExecApprovalsRaw(raw: string | null): string {
 }
 
 export function resolveExecApprovalsPath(): string {
-  return expandHomePrefix(DEFAULT_FILE);
+  return path.join(resolveStateDir(), "exec-approvals.json");
 }
 
 export function resolveExecApprovalsSocketPath(): string {
-  return expandHomePrefix(DEFAULT_SOCKET);
+  return path.join(resolveStateDir(), "exec-approvals.sock");
+}
+
+function resolveLegacyExecApprovalsPath(): string {
+  return expandHomePrefix(LEGACY_DEFAULT_FILE);
 }
 
 function normalizeAllowlistPattern(value: string | undefined): string | null {
@@ -279,22 +283,117 @@ function generateToken(): string {
   return crypto.randomBytes(24).toString("base64url");
 }
 
-export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
-  const filePath = resolveExecApprovalsPath();
+function isEffectivelyEmptyExecApprovalsFile(file: ExecApprovalsFile): boolean {
+  const socketPath = file.socket?.path?.trim();
+  const token = file.socket?.token?.trim();
+  if (socketPath || token) {
+    return false;
+  }
+
+  const defaults = file.defaults ?? {};
+  if (
+    defaults.security !== undefined ||
+    defaults.ask !== undefined ||
+    defaults.askFallback !== undefined ||
+    defaults.autoAllowSkills !== undefined
+  ) {
+    return false;
+  }
+
+  for (const agent of Object.values(file.agents ?? {})) {
+    if (
+      agent.security !== undefined ||
+      agent.ask !== undefined ||
+      agent.askFallback !== undefined ||
+      agent.autoAllowSkills !== undefined
+    ) {
+      return false;
+    }
+    if (Array.isArray(agent.allowlist) && agent.allowlist.length > 0) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function tryReadExecApprovalsFile(
+  filePath: string,
+): { raw: string; parsed: ExecApprovalsFile | null } | null {
   if (!fs.existsSync(filePath)) {
+    return null;
+  }
+  const raw = fs.readFileSync(filePath, "utf8");
+  try {
+    return { raw, parsed: JSON.parse(raw) as ExecApprovalsFile };
+  } catch {
+    return { raw, parsed: null };
+  }
+}
+
+// Read/load paths need to converge on the same effective approvals store.
+function resolveExecApprovalsSourceForRead(): {
+  path: string;
+  exists: boolean;
+  raw: string | null;
+} {
+  const targetPath = resolveExecApprovalsPath();
+  const legacyPath = resolveLegacyExecApprovalsPath();
+  const samePath = path.resolve(targetPath) === path.resolve(legacyPath);
+
+  const target = tryReadExecApprovalsFile(targetPath);
+  const legacy = samePath ? null : tryReadExecApprovalsFile(legacyPath);
+
+  const targetParsed = target?.parsed?.version === 1 ? normalizeExecApprovals(target.parsed) : null;
+  const legacyParsed = legacy?.parsed?.version === 1 ? normalizeExecApprovals(legacy.parsed) : null;
+
+  const shouldMigrate =
+    Boolean(legacyParsed) &&
+    (!target || !targetParsed || isEffectivelyEmptyExecApprovalsFile(targetParsed));
+
+  if (shouldMigrate && legacyParsed) {
+    const migrated = normalizeExecApprovals({
+      ...legacyParsed,
+      socket: {
+        path: resolveExecApprovalsSocketPath(),
+        token: legacyParsed.socket?.token?.trim() || undefined,
+      },
+    });
+    saveExecApprovals(migrated);
+    const raw = fs.readFileSync(targetPath, "utf8");
+    return {
+      path: targetPath,
+      exists: true,
+      raw,
+    };
+  }
+
+  if (target) {
+    return {
+      path: targetPath,
+      exists: true,
+      raw: target.raw,
+    };
+  }
+
+  return { path: targetPath, exists: false, raw: null };
+}
+
+export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
+  const source = resolveExecApprovalsSourceForRead();
+  if (!source.exists) {
     const file = normalizeExecApprovals({ version: 1, agents: {} });
     return {
-      path: filePath,
+      path: source.path,
       exists: false,
       raw: null,
       file,
       hash: hashExecApprovalsRaw(null),
     };
   }
-  const raw = fs.readFileSync(filePath, "utf8");
   let parsed: ExecApprovalsFile | null = null;
   try {
-    parsed = JSON.parse(raw) as ExecApprovalsFile;
+    parsed = JSON.parse(source.raw ?? "") as ExecApprovalsFile;
   } catch {
     parsed = null;
   }
@@ -303,22 +402,21 @@ export function readExecApprovalsSnapshot(): ExecApprovalsSnapshot {
       ? normalizeExecApprovals(parsed)
       : normalizeExecApprovals({ version: 1, agents: {} });
   return {
-    path: filePath,
+    path: source.path,
     exists: true,
-    raw,
+    raw: source.raw,
     file,
-    hash: hashExecApprovalsRaw(raw),
+    hash: hashExecApprovalsRaw(source.raw),
   };
 }
 
 export function loadExecApprovals(): ExecApprovalsFile {
-  const filePath = resolveExecApprovalsPath();
+  const source = resolveExecApprovalsSourceForRead();
   try {
-    if (!fs.existsSync(filePath)) {
+    if (!source.exists) {
       return normalizeExecApprovals({ version: 1, agents: {} });
     }
-    const raw = fs.readFileSync(filePath, "utf8");
-    const parsed = JSON.parse(raw) as ExecApprovalsFile;
+    const parsed = JSON.parse(source.raw ?? "") as ExecApprovalsFile;
     if (parsed?.version !== 1) {
       return normalizeExecApprovals({ version: 1, agents: {} });
     }
