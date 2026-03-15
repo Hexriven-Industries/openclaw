@@ -108,6 +108,7 @@ async function authorizeVoiceCommand(
 
   const guildInfo = resolveDiscordGuildEntry({
     guild: interaction.guild ?? undefined,
+    guildId: interaction.guild?.id ?? interaction.rawData.guild_id ?? undefined,
     guildEntries: params.discordConfig.guilds,
   });
 
