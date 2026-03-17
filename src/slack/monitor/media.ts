@@ -3,6 +3,7 @@ import { normalizeHostname } from "../../infra/net/hostname.js";
 import type { FetchLike } from "../../media/fetch.js";
 import { fetchRemoteMedia } from "../../media/fetch.js";
 import { saveMediaBuffer } from "../../media/store.js";
+import { resolveRequestUrl } from "../../plugin-sdk/request-url.js";
 import type { SlackAttachment, SlackFile } from "../types.js";
 
 function isSlackHostname(hostname: string): boolean {
@@ -37,23 +38,13 @@ function assertSlackFileUrl(rawUrl: string): URL {
   return parsed;
 }
 
-function resolveRequestUrl(input: RequestInfo | URL): string {
-  if (typeof input === "string") {
-    return input;
-  }
-  if (input instanceof URL) {
-    return input.toString();
-  }
-  if ("url" in input && typeof input.url === "string") {
-    return input.url;
-  }
-  throw new Error("Unsupported fetch input: expected string, URL, or Request");
-}
-
 function createSlackMediaFetch(token: string): FetchLike {
   let includeAuth = true;
   return async (input, init) => {
     const url = resolveRequestUrl(input);
+    if (!url) {
+      throw new Error("Unsupported fetch input: expected string, URL, or Request");
+    }
     const { headers: initHeaders, redirect: _redirect, ...rest } = init ?? {};
     const headers = new Headers(initHeaders);
 
@@ -108,6 +99,11 @@ export async function fetchWithSlackAuth(url: string, token: string): Promise<Re
   return fetch(resolvedUrl.toString(), { redirect: "follow" });
 }
 
+const SLACK_MEDIA_SSRF_POLICY = {
+  allowedHostnames: ["*.slack.com", "*.slack-edge.com", "*.slack-files.com"],
+  allowRfc2544BenchmarkRange: true,
+};
+
 /**
  * Slack voice messages (audio clips, huddle recordings) carry a `subtype` of
  * `"slack_audio"` but are served with a `video/*` MIME type (e.g. `video/mp4`,
@@ -125,13 +121,18 @@ function resolveSlackMediaMimetype(
   return mime;
 }
 
+function looksLikeHtmlBuffer(buffer: Buffer): boolean {
+  const head = buffer.subarray(0, 512).toString("utf-8").replace(/^\s+/, "").toLowerCase();
+  return head.startsWith("<!doctype html") || head.startsWith("<html");
+}
+
 export type SlackMediaResult = {
   path: string;
   contentType?: string;
   placeholder: string;
 };
 
-const MAX_SLACK_MEDIA_FILES = 8;
+export const MAX_SLACK_MEDIA_FILES = 8;
 const MAX_SLACK_MEDIA_CONCURRENCY = 3;
 const MAX_SLACK_FORWARDED_ATTACHMENTS = 8;
 
@@ -213,10 +214,25 @@ export async function resolveSlackMedia(params: {
           fetchImpl,
           filePathHint: file.name,
           maxBytes: params.maxBytes,
+          ssrfPolicy: SLACK_MEDIA_SSRF_POLICY,
         });
         if (fetched.buffer.byteLength > params.maxBytes) {
           return null;
         }
+
+        // Guard against auth/login HTML pages returned instead of binary media.
+        // Allow user-provided HTML files through.
+        const fileMime = file.mimetype?.toLowerCase();
+        const fileName = file.name?.toLowerCase() ?? "";
+        const isExpectedHtml =
+          fileMime === "text/html" || fileName.endsWith(".html") || fileName.endsWith(".htm");
+        if (!isExpectedHtml) {
+          const detectedMime = fetched.contentType?.split(";")[0]?.trim().toLowerCase();
+          if (detectedMime === "text/html" || looksLikeHtmlBuffer(fetched.buffer)) {
+            return null;
+          }
+        }
+
         const effectiveMime = resolveSlackMediaMimetype(file, fetched.contentType);
         const saved = await saveMediaBuffer(
           fetched.buffer,
@@ -273,9 +289,12 @@ export async function resolveSlackAttachmentContent(params: {
     const imageUrl = resolveForwardedAttachmentImageUrl(att);
     if (imageUrl) {
       try {
+        const fetchImpl = createSlackMediaFetch(params.token);
         const fetched = await fetchRemoteMedia({
           url: imageUrl,
+          fetchImpl,
           maxBytes: params.maxBytes,
+          ssrfPolicy: SLACK_MEDIA_SSRF_POLICY,
         });
         if (fetched.buffer.byteLength <= params.maxBytes) {
           const saved = await saveMediaBuffer(

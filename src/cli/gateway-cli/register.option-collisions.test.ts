@@ -1,20 +1,13 @@
 import { Command } from "commander";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { createCliRuntimeCapture } from "../test-runtime-capture.js";
 
 const callGatewayCli = vi.fn(async (_method: string, _opts: unknown, _params?: unknown) => ({
   ok: true,
 }));
 const gatewayStatusCommand = vi.fn(async (_opts: unknown, _runtime: unknown) => {});
 
-const runtimeLogs: string[] = [];
-const runtimeErrors: string[] = [];
-const defaultRuntime = {
-  log: (msg: string) => runtimeLogs.push(msg),
-  error: (msg: string) => runtimeErrors.push(msg),
-  exit: (code: number) => {
-    throw new Error(`__exit__:${code}`);
-  },
-};
+const { defaultRuntime, resetRuntimeCapture } = createCliRuntimeCapture();
 
 vi.mock("../cli-utils.js", () => ({
   runCommandWithRuntime: async (
@@ -68,6 +61,7 @@ vi.mock("../../commands/health.js", () => ({
 
 vi.mock("../../config/config.js", () => ({
   loadConfig: () => ({}),
+  readBestEffortConfig: async () => ({}),
 }));
 
 vi.mock("../../infra/bonjour-discovery.js", () => ({
@@ -118,45 +112,50 @@ vi.mock("./discover.js", () => ({
 }));
 
 describe("gateway register option collisions", () => {
+  let registerGatewayCli: typeof import("./register.js").registerGatewayCli;
+  let sharedProgram: Command;
+
+  beforeAll(async () => {
+    ({ registerGatewayCli } = await import("./register.js"));
+    sharedProgram = new Command();
+    sharedProgram.exitOverride();
+    registerGatewayCli(sharedProgram);
+  });
+
   beforeEach(() => {
-    runtimeLogs.length = 0;
-    runtimeErrors.length = 0;
+    resetRuntimeCapture();
     callGatewayCli.mockClear();
     gatewayStatusCommand.mockClear();
   });
 
-  it("forwards --token to gateway call when parent and child option names collide", async () => {
-    const { registerGatewayCli } = await import("./register.js");
-    const program = new Command();
-    registerGatewayCli(program);
-
-    await program.parseAsync(["gateway", "call", "health", "--token", "tok_call", "--json"], {
-      from: "user",
-    });
-
-    expect(callGatewayCli).toHaveBeenCalledWith(
-      "health",
-      expect.objectContaining({
-        token: "tok_call",
-      }),
-      {},
-    );
-  });
-
-  it("forwards --token to gateway probe when parent and child option names collide", async () => {
-    const { registerGatewayCli } = await import("./register.js");
-    const program = new Command();
-    registerGatewayCli(program);
-
-    await program.parseAsync(["gateway", "probe", "--token", "tok_probe", "--json"], {
-      from: "user",
-    });
-
-    expect(gatewayStatusCommand).toHaveBeenCalledWith(
-      expect.objectContaining({
-        token: "tok_probe",
-      }),
-      defaultRuntime,
-    );
+  it.each([
+    {
+      name: "forwards --token to gateway call when parent and child option names collide",
+      argv: ["gateway", "call", "health", "--token", "tok_call", "--json"],
+      assert: () => {
+        expect(callGatewayCli).toHaveBeenCalledWith(
+          "health",
+          expect.objectContaining({
+            token: "tok_call",
+          }),
+          {},
+        );
+      },
+    },
+    {
+      name: "forwards --token to gateway probe when parent and child option names collide",
+      argv: ["gateway", "probe", "--token", "tok_probe", "--json"],
+      assert: () => {
+        expect(gatewayStatusCommand).toHaveBeenCalledWith(
+          expect.objectContaining({
+            token: "tok_probe",
+          }),
+          defaultRuntime,
+        );
+      },
+    },
+  ])("$name", async ({ argv, assert }) => {
+    await sharedProgram.parseAsync(argv, { from: "user" });
+    assert();
   });
 });

@@ -1,5 +1,11 @@
 import type { AgentEvent } from "@mariozechner/pi-agent-core";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
+import {
+  buildExecApprovalPendingReplyPayload,
+  buildExecApprovalUnavailableReplyPayload,
+} from "../infra/exec-approval-reply.js";
 import { getGlobalHookRunner } from "../plugins/hook-runner-global.js";
 import type { PluginHookAfterToolCallEvent } from "../plugins/types.js";
 import { normalizeTextForComparison } from "./pi-embedded-helpers.js";
@@ -9,19 +15,38 @@ import type {
   ToolHandlerContext,
 } from "./pi-embedded-subscribe.handlers.types.js";
 import {
+  extractMessagingToolSend,
   extractToolErrorMessage,
   extractToolResultMediaPaths,
   extractToolResultText,
-  extractMessagingToolSend,
+  filterToolResultMediaUrls,
   isToolResultError,
   sanitizeToolResult,
 } from "./pi-embedded-subscribe.tools.js";
 import { inferToolMetaFromArgs } from "./pi-embedded-utils.js";
+import { consumeAdjustedParamsForToolCall } from "./pi-tools.before-tool-call.js";
 import { buildToolMutationState, isSameToolMutationAction } from "./tool-mutation.js";
 import { normalizeToolName } from "./tool-policy.js";
 
-/** Track tool execution start times and args for after_tool_call hook */
-const toolStartData = new Map<string, { startTime: number; args: unknown }>();
+type ToolStartRecord = {
+  startTime: number;
+  args: unknown;
+};
+
+/** Track tool execution start data for after_tool_call hook. */
+const toolStartData = new Map<string, ToolStartRecord>();
+const messagingDeliveryLog = createSubsystemLogger("agent/messaging-delivery-debug");
+
+function logMessagingDeliveryDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  messagingDeliveryLog.debug(message, meta);
+}
+
+function buildToolStartKey(runId: string, toolCallId: string): string {
+  return `${runId}:${toolCallId}`;
+}
 
 function isCronAddAction(args: unknown): boolean {
   if (!args || typeof args !== "object") {
@@ -128,6 +153,159 @@ function collectMessagingMediaUrlsFromToolResult(result: unknown): string[] {
   return urls;
 }
 
+function readExecApprovalPendingDetails(result: unknown): {
+  approvalId: string;
+  approvalSlug: string;
+  expiresAtMs?: number;
+  host: "gateway" | "node";
+  command: string;
+  cwd?: string;
+  nodeId?: string;
+  warningText?: string;
+} | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const outer = result as Record<string, unknown>;
+  const details =
+    outer.details && typeof outer.details === "object" && !Array.isArray(outer.details)
+      ? (outer.details as Record<string, unknown>)
+      : outer;
+  if (details.status !== "approval-pending") {
+    return null;
+  }
+  const approvalId = typeof details.approvalId === "string" ? details.approvalId.trim() : "";
+  const approvalSlug = typeof details.approvalSlug === "string" ? details.approvalSlug.trim() : "";
+  const command = typeof details.command === "string" ? details.command : "";
+  const host = details.host === "node" ? "node" : details.host === "gateway" ? "gateway" : null;
+  if (!approvalId || !approvalSlug || !command || !host) {
+    return null;
+  }
+  return {
+    approvalId,
+    approvalSlug,
+    expiresAtMs: typeof details.expiresAtMs === "number" ? details.expiresAtMs : undefined,
+    host,
+    command,
+    cwd: typeof details.cwd === "string" ? details.cwd : undefined,
+    nodeId: typeof details.nodeId === "string" ? details.nodeId : undefined,
+    warningText: typeof details.warningText === "string" ? details.warningText : undefined,
+  };
+}
+
+function readExecApprovalUnavailableDetails(result: unknown): {
+  reason: "initiating-platform-disabled" | "initiating-platform-unsupported" | "no-approval-route";
+  warningText?: string;
+  channelLabel?: string;
+  sentApproverDms?: boolean;
+} | null {
+  if (!result || typeof result !== "object") {
+    return null;
+  }
+  const outer = result as Record<string, unknown>;
+  const details =
+    outer.details && typeof outer.details === "object" && !Array.isArray(outer.details)
+      ? (outer.details as Record<string, unknown>)
+      : outer;
+  if (details.status !== "approval-unavailable") {
+    return null;
+  }
+  const reason =
+    details.reason === "initiating-platform-disabled" ||
+    details.reason === "initiating-platform-unsupported" ||
+    details.reason === "no-approval-route"
+      ? details.reason
+      : null;
+  if (!reason) {
+    return null;
+  }
+  return {
+    reason,
+    warningText: typeof details.warningText === "string" ? details.warningText : undefined,
+    channelLabel: typeof details.channelLabel === "string" ? details.channelLabel : undefined,
+    sentApproverDms: details.sentApproverDms === true,
+  };
+}
+async function emitToolResultOutput(params: {
+  ctx: ToolHandlerContext;
+  toolName: string;
+  meta?: string;
+  isToolError: boolean;
+  result: unknown;
+  sanitizedResult: unknown;
+}) {
+  const { ctx, toolName, meta, isToolError, result, sanitizedResult } = params;
+  if (!ctx.params.onToolResult) {
+    return;
+  }
+
+  const approvalPending = readExecApprovalPendingDetails(result);
+  if (!isToolError && approvalPending) {
+    try {
+      await ctx.params.onToolResult(
+        buildExecApprovalPendingReplyPayload({
+          approvalId: approvalPending.approvalId,
+          approvalSlug: approvalPending.approvalSlug,
+          command: approvalPending.command,
+          cwd: approvalPending.cwd,
+          host: approvalPending.host,
+          nodeId: approvalPending.nodeId,
+          expiresAtMs: approvalPending.expiresAtMs,
+          warningText: approvalPending.warningText,
+        }),
+      );
+      ctx.state.deterministicApprovalPromptSent = true;
+    } catch {
+      // ignore delivery failures
+    }
+    return;
+  }
+
+  const approvalUnavailable = readExecApprovalUnavailableDetails(result);
+  if (!isToolError && approvalUnavailable) {
+    try {
+      await ctx.params.onToolResult?.(
+        buildExecApprovalUnavailableReplyPayload({
+          reason: approvalUnavailable.reason,
+          warningText: approvalUnavailable.warningText,
+          channelLabel: approvalUnavailable.channelLabel,
+          sentApproverDms: approvalUnavailable.sentApproverDms,
+        }),
+      );
+      ctx.state.deterministicApprovalPromptSent = true;
+    } catch {
+      // ignore delivery failures
+    }
+    return;
+  }
+
+  if (ctx.shouldEmitToolOutput()) {
+    const outputText = extractToolResultText(sanitizedResult);
+    if (outputText) {
+      ctx.emitToolOutput(toolName, meta, outputText);
+    }
+    return;
+  }
+
+  if (isToolError) {
+    return;
+  }
+
+  // emitToolOutput() already handles MEDIA: directives when enabled; this path
+  // only sends raw media URLs for non-verbose delivery mode.
+  const mediaPaths = filterToolResultMediaUrls(toolName, extractToolResultMediaPaths(result));
+  if (mediaPaths.length === 0) {
+    return;
+  }
+  try {
+    await ctx.params.onToolResult({ mediaUrls: mediaPaths });
+    ctx.state.messagingToolSentMediaUrls.push(...mediaPaths);
+    ctx.trimMessagingToolSent();
+  } catch {
+    // ignore delivery failures
+  }
+}
+
 export async function handleToolExecutionStart(
   ctx: ToolHandlerContext,
   evt: AgentEvent & { toolName: string; toolCallId: string; args: unknown },
@@ -135,16 +313,17 @@ export async function handleToolExecutionStart(
   // Flush pending block replies to preserve message boundaries before tool execution.
   ctx.flushBlockReplyBuffer();
   if (ctx.params.onBlockReplyFlush) {
-    void ctx.params.onBlockReplyFlush();
+    await ctx.params.onBlockReplyFlush();
   }
 
   const rawToolName = String(evt.toolName);
   const toolName = normalizeToolName(rawToolName);
   const toolCallId = String(evt.toolCallId);
   const args = evt.args;
+  const runId = ctx.params.runId;
 
   // Track start time and args for after_tool_call hook
-  toolStartData.set(toolCallId, { startTime: Date.now(), args });
+  toolStartData.set(buildToolStartKey(runId, toolCallId), { startTime: Date.now(), args });
 
   if (toolName === "read") {
     const record = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
@@ -203,17 +382,36 @@ export async function handleToolExecutionStart(
       const sendTarget = extractMessagingToolSend(toolName, argsRecord);
       if (sendTarget) {
         ctx.state.pendingMessagingTargets.set(toolCallId, sendTarget);
+        logMessagingDeliveryDebug("messaging tool pending target tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          sendTarget,
+        });
       }
       // Field names vary by tool: Discord/Slack use "content", sessions_send uses "message"
       const text = (argsRecord.content as string) ?? (argsRecord.message as string);
       if (text && typeof text === "string") {
         ctx.state.pendingMessagingTexts.set(toolCallId, text);
         ctx.log.debug(`Tracking pending messaging text: tool=${toolName} len=${text.length}`);
+        logMessagingDeliveryDebug("messaging tool pending text tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          textLength: text.length,
+        });
       }
       // Track media URLs from messaging tool args (pending until tool_execution_end).
       const mediaUrls = collectMessagingMediaUrlsFromRecord(argsRecord);
       if (mediaUrls.length > 0) {
         ctx.state.pendingMessagingMediaUrls.set(toolCallId, mediaUrls);
+        logMessagingDeliveryDebug("messaging tool pending media tracked", {
+          runId: ctx.params.runId,
+          toolName,
+          toolCallId,
+          mediaCount: mediaUrls.length,
+          mediaUrls,
+        });
       }
     }
   }
@@ -262,12 +460,14 @@ export async function handleToolExecutionEnd(
 ) {
   const toolName = normalizeToolName(String(evt.toolName));
   const toolCallId = String(evt.toolCallId);
+  const runId = ctx.params.runId;
   const isError = Boolean(evt.isError);
   const result = evt.result;
   const isToolError = isError || isToolResultError(result);
   const sanitizedResult = sanitizeToolResult(result);
-  const startData = toolStartData.get(toolCallId);
-  toolStartData.delete(toolCallId);
+  const toolStartKey = buildToolStartKey(runId, toolCallId);
+  const startData = toolStartData.get(toolStartKey);
+  toolStartData.delete(toolStartKey);
   const callSummary = ctx.state.toolMetaById.get(toolCallId);
   const meta = callSummary?.meta;
   ctx.state.toolMetas.push({ toolName, meta });
@@ -308,6 +508,12 @@ export async function handleToolExecutionEnd(
       ctx.state.messagingToolSentTexts.push(pendingText);
       ctx.state.messagingToolSentTextsNormalized.push(normalizeTextForComparison(pendingText));
       ctx.log.debug(`Committed messaging text: tool=${toolName} len=${pendingText.length}`);
+      logMessagingDeliveryDebug("messaging tool text committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        textLength: pendingText.length,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -315,6 +521,12 @@ export async function handleToolExecutionEnd(
     ctx.state.pendingMessagingTargets.delete(toolCallId);
     if (!isToolError) {
       ctx.state.messagingToolSentTargets.push(pendingTarget);
+      logMessagingDeliveryDebug("messaging tool target committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        pendingTarget,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -324,6 +536,11 @@ export async function handleToolExecutionEnd(
     startData?.args && typeof startData.args === "object"
       ? (startData.args as Record<string, unknown>)
       : {};
+  const adjustedArgs = consumeAdjustedParamsForToolCall(toolCallId, runId);
+  const afterToolCallArgs =
+    adjustedArgs && typeof adjustedArgs === "object"
+      ? (adjustedArgs as Record<string, unknown>)
+      : startArgs;
   const isMessagingSend =
     pendingMediaUrls.length > 0 ||
     (isMessagingTool(toolName) && isMessagingToolSendAction(toolName, startArgs));
@@ -334,6 +551,13 @@ export async function handleToolExecutionEnd(
     ];
     if (committedMediaUrls.length > 0) {
       ctx.state.messagingToolSentMediaUrls.push(...committedMediaUrls);
+      logMessagingDeliveryDebug("messaging tool media committed", {
+        runId: ctx.params.runId,
+        toolName,
+        toolCallId,
+        mediaCount: committedMediaUrls.length,
+        mediaUrls: committedMediaUrls,
+      });
       ctx.trimMessagingToolSent();
     }
   }
@@ -370,35 +594,17 @@ export async function handleToolExecutionEnd(
     `embedded run tool end: runId=${ctx.params.runId} tool=${toolName} toolCallId=${toolCallId}`,
   );
 
-  if (ctx.params.onToolResult && ctx.shouldEmitToolOutput()) {
-    const outputText = extractToolResultText(sanitizedResult);
-    if (outputText) {
-      ctx.emitToolOutput(toolName, meta, outputText);
-    }
-  }
-
-  // Deliver media from tool results when the verbose emitToolOutput path is off.
-  // When shouldEmitToolOutput() is true, emitToolOutput already delivers media
-  // via parseReplyDirectives (MEDIA: text extraction), so skip to avoid duplicates.
-  if (ctx.params.onToolResult && !isToolError && !ctx.shouldEmitToolOutput()) {
-    const mediaPaths = extractToolResultMediaPaths(result);
-    if (mediaPaths.length > 0) {
-      try {
-        void ctx.params.onToolResult({ mediaUrls: mediaPaths });
-      } catch {
-        // ignore delivery failures
-      }
-    }
-  }
+  await emitToolResultOutput({ ctx, toolName, meta, isToolError, result, sanitizedResult });
 
   // Run after_tool_call plugin hook (fire-and-forget)
   const hookRunnerAfter = ctx.hookRunner ?? getGlobalHookRunner();
   if (hookRunnerAfter?.hasHooks("after_tool_call")) {
     const durationMs = startData?.startTime != null ? Date.now() - startData.startTime : undefined;
-    const toolArgs = startData?.args;
     const hookEvent: PluginHookAfterToolCallEvent = {
       toolName,
-      params: (toolArgs && typeof toolArgs === "object" ? toolArgs : {}) as Record<string, unknown>,
+      params: afterToolCallArgs,
+      runId,
+      toolCallId,
       result: sanitizedResult,
       error: isToolError ? extractToolErrorMessage(sanitizedResult) : undefined,
       durationMs,
@@ -406,8 +612,11 @@ export async function handleToolExecutionEnd(
     void hookRunnerAfter
       .runAfterToolCall(hookEvent, {
         toolName,
-        agentId: undefined,
-        sessionKey: undefined,
+        agentId: ctx.params.agentId,
+        sessionKey: ctx.params.sessionKey,
+        sessionId: ctx.params.sessionId,
+        runId,
+        toolCallId,
       })
       .catch((err) => {
         ctx.log.warn(`after_tool_call hook failed: tool=${toolName} error=${String(err)}`);

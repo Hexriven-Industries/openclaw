@@ -7,7 +7,11 @@ import { buildAgentSessionKey } from "../../routing/resolve-route.js";
 import { truncateUtf16Safe } from "../../utils.js";
 import type { DiscordChannelConfigResolved } from "./allow-list.js";
 import type { DiscordMessageEvent } from "./listeners.js";
-import { resolveDiscordChannelInfo, resolveDiscordMessageChannelId } from "./message-utils.js";
+import {
+  resolveDiscordChannelInfo,
+  resolveDiscordEmbedText,
+  resolveDiscordMessageChannelId,
+} from "./message-utils.js";
 
 export type DiscordThreadChannel = {
   id: string;
@@ -85,6 +89,18 @@ function isDiscordThreadType(type: ChannelType | undefined): boolean {
   );
 }
 
+function resolveTrimmedDiscordMessageChannelId(params: {
+  message: DiscordMessageEvent["message"];
+  messageChannelId?: string;
+}) {
+  return (
+    params.messageChannelId ||
+    resolveDiscordMessageChannelId({
+      message: params.message,
+    })
+  ).trim();
+}
+
 export function resolveDiscordThreadChannel(params: {
   isGuildMessage: boolean;
   message: DiscordMessageEvent["message"];
@@ -131,8 +147,12 @@ export async function resolveDiscordThreadParentInfo(params: {
   channelInfo: import("./message-utils.js").DiscordChannelInfo | null;
 }): Promise<DiscordThreadParentInfo> {
   const { threadChannel, channelInfo, client } = params;
-  const parentId =
+  let parentId =
     threadChannel.parentId ?? threadChannel.parent?.id ?? channelInfo?.parentId ?? undefined;
+  if (!parentId && threadChannel.id) {
+    const threadInfo = await resolveDiscordChannelInfo(client, threadChannel.id);
+    parentId = threadInfo?.parentId ?? undefined;
+  }
   if (!parentId) {
     return {};
   }
@@ -168,7 +188,7 @@ export async function resolveDiscordThreadStarter(params: {
       Routes.channelMessage(messageChannelId, params.channel.id),
     )) as {
       content?: string | null;
-      embeds?: Array<{ description?: string | null }>;
+      embeds?: Array<{ title?: string | null; description?: string | null }>;
       member?: { nick?: string | null; displayName?: string | null };
       author?: {
         id?: string | null;
@@ -180,7 +200,9 @@ export async function resolveDiscordThreadStarter(params: {
     if (!starter) {
       return null;
     }
-    const text = starter.content?.trim() ?? starter.embeds?.[0]?.description?.trim() ?? "";
+    const content = starter.content?.trim() ?? "";
+    const embedText = resolveDiscordEmbedText(starter.embeds?.[0]);
+    const text = content || embedText;
     if (!text) {
       return null;
     }
@@ -291,7 +313,7 @@ export type DiscordAutoThreadReplyPlan = DiscordReplyDeliveryPlan & {
   autoThreadContext: DiscordAutoThreadContext | null;
 };
 
-export async function resolveDiscordAutoThreadReplyPlan(params: {
+type MaybeCreateDiscordAutoThreadParams = {
   client: Client;
   message: DiscordMessageEvent["message"];
   messageChannelId?: string;
@@ -301,16 +323,16 @@ export async function resolveDiscordAutoThreadReplyPlan(params: {
   channelType?: ChannelType;
   baseText: string;
   combinedBody: string;
-  replyToMode: ReplyToMode;
-  agentId: string;
-  channel: string;
-}): Promise<DiscordAutoThreadReplyPlan> {
-  const messageChannelId = (
-    params.messageChannelId ||
-    resolveDiscordMessageChannelId({
-      message: params.message,
-    })
-  ).trim();
+};
+
+export async function resolveDiscordAutoThreadReplyPlan(
+  params: MaybeCreateDiscordAutoThreadParams & {
+    replyToMode: ReplyToMode;
+    agentId: string;
+    channel: string;
+  },
+): Promise<DiscordAutoThreadReplyPlan> {
+  const messageChannelId = resolveTrimmedDiscordMessageChannelId(params);
   // Prefer the resolved thread channel ID when available so replies stay in-thread.
   const targetChannelId = params.threadChannel?.id ?? (messageChannelId || "unknown");
   const originalReplyTarget = `channel:${targetChannelId}`;
@@ -343,17 +365,9 @@ export async function resolveDiscordAutoThreadReplyPlan(params: {
   return { ...deliveryPlan, createdThreadId, autoThreadContext };
 }
 
-export async function maybeCreateDiscordAutoThread(params: {
-  client: Client;
-  message: DiscordMessageEvent["message"];
-  messageChannelId?: string;
-  isGuildMessage: boolean;
-  channelConfig?: DiscordChannelConfigResolved | null;
-  threadChannel?: DiscordThreadChannel | null;
-  channelType?: ChannelType;
-  baseText: string;
-  combinedBody: string;
-}): Promise<string | undefined> {
+export async function maybeCreateDiscordAutoThread(
+  params: MaybeCreateDiscordAutoThreadParams,
+): Promise<string | undefined> {
   if (!params.isGuildMessage) {
     return undefined;
   }
@@ -373,12 +387,7 @@ export async function maybeCreateDiscordAutoThread(params: {
     return undefined;
   }
 
-  const messageChannelId = (
-    params.messageChannelId ||
-    resolveDiscordMessageChannelId({
-      message: params.message,
-    })
-  ).trim();
+  const messageChannelId = resolveTrimmedDiscordMessageChannelId(params);
   if (!messageChannelId) {
     return undefined;
   }
@@ -387,12 +396,18 @@ export async function maybeCreateDiscordAutoThread(params: {
       params.baseText || params.combinedBody || "Thread",
       params.message.id,
     );
+
+    // Parse archive duration from config, default to 60 minutes
+    const archiveDuration = params.channelConfig?.autoArchiveDuration
+      ? Number(params.channelConfig.autoArchiveDuration)
+      : 60;
+
     const created = (await params.client.rest.post(
       `${Routes.channelMessage(messageChannelId, params.message.id)}/threads`,
       {
         body: {
           name: threadName,
-          auto_archive_duration: 60,
+          auto_archive_duration: archiveDuration,
         },
       },
     )) as { id?: string };

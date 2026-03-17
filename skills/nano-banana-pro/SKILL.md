@@ -27,6 +27,13 @@ metadata:
 
 Use the bundled script to generate or edit images.
 
+Execution rule
+
+- If this skill is visible to you, assume the bundled script path is valid and use it directly.
+- Do not run `find`, `pwd`, `whoami`, `printenv`, `echo $HOME`, or similar shell-debugging commands just to rediscover the skill path or environment.
+- Do not search the filesystem for `generate_image.py`.
+- Use the bundled command shape below first. Only debug if the direct invocation actually fails.
+
 Generate
 
 ```bash
@@ -50,9 +57,17 @@ API key
 - `GEMINI_API_KEY` env var
 - Or set `skills."nano-banana-pro".apiKey` / `skills."nano-banana-pro".env.GEMINI_API_KEY` in `~/.openclaw/openclaw.json`
 
+Specific aspect ratio (optional)
+
+```bash
+uv run {baseDir}/scripts/generate_image.py --prompt "portrait photo" --filename "output.png" --aspect-ratio 9:16
+```
+
 Notes
 
 - Resolutions: `1K` (default), `2K`, `4K`.
+- Aspect ratios: `1:1`, `2:3`, `3:2`, `3:4`, `4:3`, `4:5`, `5:4`, `9:16`, `16:9`, `21:9`. Without `--aspect-ratio` / `-a`, the model picks freely - use this flag for avatars, profile pics, or consistent batch generation.
 - Use timestamps in filenames: `yyyy-mm-dd-hh-mm-ss-name.png`.
 - The script prints a `MEDIA:` line for OpenClaw to auto-attach on supported chat providers.
 - Do not read the image back; report the saved path only.
+- Prefer one direct run of `uv run {baseDir}/scripts/generate_image.py ...` over environment inspection.

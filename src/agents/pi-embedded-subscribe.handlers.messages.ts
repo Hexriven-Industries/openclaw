@@ -2,11 +2,50 @@ import type { AgentEvent, AgentMessage } from "@mariozechner/pi-agent-core";
 import { parseReplyDirectives } from "../auto-reply/reply/reply-directives.js";
 import { SILENT_REPLY_TOKEN } from "../auto-reply/tokens.js";
 import { emitAgentEvent } from "../infra/agent-events.js";
+import { isTruthyEnvValue } from "../infra/env.js";
+import { createSubsystemLogger } from "../logging/subsystem.js";
 import { createInlineCodeState } from "../markdown/code-spans.js";
 import {
   isMessagingToolDuplicateNormalized,
   normalizeTextForComparison,
 } from "./pi-embedded-helpers.js";
+
+function normalizeMediaUrlForDedupe(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return "";
+  }
+  if (!trimmed.toLowerCase().startsWith("file://")) {
+    return trimmed;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol === "file:") {
+      return decodeURIComponent(parsed.pathname || "");
+    }
+  } catch {
+    // Fall through to legacy normalization for malformed file URLs.
+  }
+  return trimmed.replace(/^file:\/\//i, "");
+}
+
+export function filterAlreadySentBlockReplyMediaUrls(params: {
+  mediaUrls?: string[];
+  sentMediaUrls: string[];
+}): string[] | undefined {
+  const mediaUrls = params.mediaUrls?.filter(Boolean) ?? [];
+  if (mediaUrls.length === 0) {
+    return undefined;
+  }
+  if (params.sentMediaUrls.length === 0) {
+    return mediaUrls;
+  }
+  const sentSet = new Set(
+    params.sentMediaUrls.map((value) => normalizeMediaUrlForDedupe(value)).filter(Boolean),
+  );
+  const filtered = mediaUrls.filter((value) => !sentSet.has(normalizeMediaUrlForDedupe(value)));
+  return filtered.length > 0 ? filtered : undefined;
+}
 import type { EmbeddedPiSubscribeContext } from "./pi-embedded-subscribe.handlers.types.js";
 import { appendRawStream } from "./pi-embedded-subscribe.raw-stream.js";
 import {
@@ -18,9 +57,21 @@ import {
   promoteThinkingTagsToBlocks,
 } from "./pi-embedded-utils.js";
 
+const deliveryStateLog = createSubsystemLogger("agent/messaging-delivery-debug");
+
+function logDeliveryStateDebug(message: string, meta?: Record<string, unknown>) {
+  if (!isTruthyEnvValue(process.env.OPENCLAW_DISCORD_DELIVERY_DEBUG)) {
+    return;
+  }
+  deliveryStateLog.debug(message, meta);
+}
+
 const stripTrailingDirective = (text: string): string => {
   const openIndex = text.lastIndexOf("[[");
   if (openIndex < 0) {
+    if (text.endsWith("[")) {
+      return text.slice(0, -1);
+    }
     return text;
   }
   const closeIndex = text.indexOf("]]", openIndex + 2);
@@ -29,6 +80,14 @@ const stripTrailingDirective = (text: string): string => {
   }
   return text.slice(0, openIndex);
 };
+
+function emitReasoningEnd(ctx: EmbeddedPiSubscribeContext) {
+  if (!ctx.state.reasoningStreamOpen) {
+    return;
+  }
+  ctx.state.reasoningStreamOpen = false;
+  void ctx.params.onReasoningEnd?.();
+}
 
 export function resolveSilentReplyFallbackText(params: {
   text: string;
@@ -40,8 +99,16 @@ export function resolveSilentReplyFallbackText(params: {
   }
   const fallback = params.messagingToolSentTexts.at(-1)?.trim();
   if (!fallback) {
+    logDeliveryStateDebug("silent reply fallback unavailable", {
+      text: params.text,
+      messagingToolSentTextCount: params.messagingToolSentTexts.length,
+    });
     return params.text;
   }
+  logDeliveryStateDebug("silent reply fallback resolved from messaging tool text", {
+    fallbackLength: fallback.length,
+    messagingToolSentTextCount: params.messagingToolSentTexts.length,
+  });
   return fallback;
 }
 
@@ -74,6 +141,9 @@ export function handleMessageUpdate(
   }
 
   ctx.noteLastAssistant(msg);
+  if (ctx.state.deterministicApprovalPromptSent) {
+    return;
+  }
 
   const assistantEvent = evt.assistantMessageEvent;
   const assistantRecord =
@@ -81,6 +151,36 @@ export function handleMessageUpdate(
       ? (assistantEvent as Record<string, unknown>)
       : undefined;
   const evtType = typeof assistantRecord?.type === "string" ? assistantRecord.type : "";
+
+  if (evtType === "thinking_start" || evtType === "thinking_delta" || evtType === "thinking_end") {
+    if (evtType === "thinking_start" || evtType === "thinking_delta") {
+      ctx.state.reasoningStreamOpen = true;
+    }
+    const thinkingDelta = typeof assistantRecord?.delta === "string" ? assistantRecord.delta : "";
+    const thinkingContent =
+      typeof assistantRecord?.content === "string" ? assistantRecord.content : "";
+    appendRawStream({
+      ts: Date.now(),
+      event: "assistant_thinking_stream",
+      runId: ctx.params.runId,
+      sessionId: (ctx.params.session as { id?: string }).id,
+      evtType,
+      delta: thinkingDelta,
+      content: thinkingContent,
+    });
+    if (ctx.state.streamReasoning) {
+      // Prefer full partial-message thinking when available; fall back to event payloads.
+      const partialThinking = extractAssistantThinking(msg);
+      ctx.emitReasoningStream(partialThinking || thinkingContent || thinkingDelta);
+    }
+    if (evtType === "thinking_end") {
+      if (!ctx.state.reasoningStreamOpen) {
+        ctx.state.reasoningStreamOpen = true;
+      }
+      emitReasoningEnd(ctx);
+    }
+    return;
+  }
 
   if (evtType !== "text_delta" && evtType !== "text_start" && evtType !== "text_end") {
     return;
@@ -142,9 +242,12 @@ export function handleMessageUpdate(
   if (next) {
     const wasThinking = ctx.state.partialBlockState.thinking;
     const visibleDelta = chunk ? ctx.stripBlockTags(chunk, ctx.state.partialBlockState) : "";
+    if (!wasThinking && ctx.state.partialBlockState.thinking) {
+      ctx.state.reasoningStreamOpen = true;
+    }
     // Detect when thinking block ends (</think> tag processed)
     if (wasThinking && !ctx.state.partialBlockState.thinking) {
-      void ctx.params.onReasoningEnd?.();
+      emitReasoningEnd(ctx);
     }
     const parsedDelta = visibleDelta ? ctx.consumePartialReplyDirectives(visibleDelta) : null;
     const parsedFull = parseReplyDirectives(stripTrailingDirective(next));
@@ -201,13 +304,7 @@ export function handleMessageUpdate(
   }
 
   if (evtType === "text_end" && ctx.state.blockReplyBreak === "text_end") {
-    if (ctx.blockChunker?.hasBuffered()) {
-      ctx.blockChunker.drain({ force: true, emit: ctx.emitBlockChunk });
-      ctx.blockChunker.reset();
-    } else if (ctx.state.blockBuffer.length > 0) {
-      ctx.emitBlockChunk(ctx.state.blockBuffer);
-      ctx.state.blockBuffer = "";
-    }
+    ctx.flushBlockReplyBuffer();
   }
 }
 
@@ -223,6 +320,9 @@ export function handleMessageEnd(
   const assistantMessage = msg;
   ctx.noteLastAssistant(assistantMessage);
   ctx.recordAssistantUsage((assistantMessage as { usage?: unknown }).usage);
+  if (ctx.state.deterministicApprovalPromptSent) {
+    return;
+  }
   promoteThinkingTagsToBlocks(assistantMessage);
 
   const rawText = extractAssistantText(assistantMessage);
@@ -250,7 +350,7 @@ export function handleMessageEnd(
   let mediaUrls = parsedText?.mediaUrls;
   let hasMedia = Boolean(mediaUrls && mediaUrls.length > 0);
 
-  if (!cleanedText && !hasMedia) {
+  if (!cleanedText && !hasMedia && !ctx.params.enforceFinalTag) {
     const rawTrimmed = rawText.trim();
     const rawStrippedFinal = rawTrimmed.replace(/<\s*\/?\s*final\s*>/gi, "").trim();
     const rawCandidate = rawStrippedFinal || rawTrimmed;
@@ -288,6 +388,16 @@ export function handleMessageEnd(
   ctx.finalizeAssistantTexts({ text, addedDuringMessage, chunkerHasBuffered });
 
   const onBlockReply = ctx.params.onBlockReply;
+  const emitBlockReplySafely = (payload: Parameters<NonNullable<typeof onBlockReply>>[0]) => {
+    if (!onBlockReply) {
+      return;
+    }
+    void Promise.resolve()
+      .then(() => onBlockReply(payload))
+      .catch((err) => {
+        ctx.log.warn(`block reply callback failed: ${String(err)}`);
+      });
+  };
   const shouldEmitReasoning = Boolean(
     ctx.state.includeReasoning &&
     formattedReasoning &&
@@ -301,12 +411,43 @@ export function handleMessageEnd(
       return;
     }
     ctx.state.lastReasoningSent = formattedReasoning;
-    void onBlockReply?.({ text: formattedReasoning });
+    emitBlockReplySafely({ text: formattedReasoning, isReasoning: true });
   };
 
   if (shouldEmitReasoningBeforeAnswer) {
     maybeEmitReasoning();
   }
+
+  const emitSplitResultAsBlockReply = (
+    splitResult: ReturnType<typeof ctx.consumeReplyDirectives> | null | undefined,
+  ) => {
+    if (!splitResult || !onBlockReply) {
+      return;
+    }
+    const {
+      text: cleanedText,
+      mediaUrls,
+      audioAsVoice,
+      replyToId,
+      replyToTag,
+      replyToCurrent,
+    } = splitResult;
+    const dedupedMediaUrls = filterAlreadySentBlockReplyMediaUrls({
+      mediaUrls,
+      sentMediaUrls: ctx.state.messagingToolSentMediaUrls,
+    });
+    // Emit if there's content OR audioAsVoice flag (to propagate the flag).
+    if (cleanedText || (dedupedMediaUrls && dedupedMediaUrls.length > 0) || audioAsVoice) {
+      emitBlockReplySafely({
+        text: cleanedText,
+        mediaUrls: dedupedMediaUrls,
+        audioAsVoice,
+        replyToId,
+        replyToTag,
+        replyToCurrent,
+      });
+    }
+  };
 
   if (
     (ctx.state.blockReplyBreak === "message_end" ||
@@ -331,28 +472,7 @@ export function handleMessageEnd(
         );
       } else {
         ctx.state.lastBlockReplyText = text;
-        const splitResult = ctx.consumeReplyDirectives(text, { final: true });
-        if (splitResult) {
-          const {
-            text: cleanedText,
-            mediaUrls,
-            audioAsVoice,
-            replyToId,
-            replyToTag,
-            replyToCurrent,
-          } = splitResult;
-          // Emit if there's content OR audioAsVoice flag (to propagate the flag).
-          if (cleanedText || (mediaUrls && mediaUrls.length > 0) || audioAsVoice) {
-            void onBlockReply({
-              text: cleanedText,
-              mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-              audioAsVoice,
-              replyToId,
-              replyToTag,
-              replyToCurrent,
-            });
-          }
-        }
+        emitSplitResultAsBlockReply(ctx.consumeReplyDirectives(text, { final: true }));
       }
     }
   }
@@ -365,27 +485,7 @@ export function handleMessageEnd(
   }
 
   if (ctx.state.blockReplyBreak === "text_end" && onBlockReply) {
-    const tailResult = ctx.consumeReplyDirectives("", { final: true });
-    if (tailResult) {
-      const {
-        text: cleanedText,
-        mediaUrls,
-        audioAsVoice,
-        replyToId,
-        replyToTag,
-        replyToCurrent,
-      } = tailResult;
-      if (cleanedText || (mediaUrls && mediaUrls.length > 0) || audioAsVoice) {
-        void onBlockReply({
-          text: cleanedText,
-          mediaUrls: mediaUrls?.length ? mediaUrls : undefined,
-          audioAsVoice,
-          replyToId,
-          replyToTag,
-          replyToCurrent,
-        });
-      }
-    }
+    emitSplitResultAsBlockReply(ctx.consumeReplyDirectives("", { final: true }));
   }
 
   ctx.state.deltaBuffer = "";
@@ -396,4 +496,5 @@ export function handleMessageEnd(
   ctx.state.blockState.inlineCode = createInlineCodeState();
   ctx.state.lastStreamedAssistant = undefined;
   ctx.state.lastStreamedAssistantCleaned = undefined;
+  ctx.state.reasoningStreamOpen = false;
 }

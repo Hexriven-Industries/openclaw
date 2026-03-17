@@ -1,0 +1,19 @@
+{
+  $include: "./base.json5",
+
+  // Optional local-only overrides:
+  // 1) Copy overrides/dev.local.example.json5 -> overrides/dev.local.json5
+  // 2) Add "./overrides/dev.local.json5" to $include above.
+
+  gateway: {
+    mode: "local",
+    port: 18790,
+  },
+
+  agents: {
+    defaults: {
+      // Keep dev workspace isolated from prod.
+      workspace: "~/.openclaw-dev/workspace",
+    },
+  },
+}

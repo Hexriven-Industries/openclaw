@@ -1,0 +1,5 @@
+# Local-only overrides copied from *.example.json5
+overrides/*.local.json5
+
+# Editor and OS noise
+.DS_Store

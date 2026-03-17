@@ -8,16 +8,17 @@ describe("slash command user resolution", () => {
 
   it("should extract user from interaction.member.user in guild contexts", () => {
     // Simulate a guild interaction (like in a forum thread)
-    const mockGuildInteraction = {
-      user: undefined, // In guild contexts, this may be undefined or incomplete
-      member: {
-        user: {
-          id: testUserId,
-          username: testUsername,
-        } as User,
-        nickname: null,
-      },
-    };
+    const mockGuildInteraction: { user?: User; member?: { user?: User; nickname: string | null } } =
+      {
+        user: undefined, // In guild contexts, this may be undefined or incomplete
+        member: {
+          user: {
+            id: testUserId,
+            username: testUsername,
+          } as User,
+          nickname: null,
+        },
+      };
 
     // This is what the fix should do: prefer interaction.member.user
     const user = mockGuildInteraction.member?.user ?? mockGuildInteraction.user;
@@ -38,7 +39,7 @@ describe("slash command user resolution", () => {
 
   it("should fallback to interaction.user in DM contexts", () => {
     // Simulate a DM interaction
-    const mockDmInteraction = {
+    const mockDmInteraction: { user?: User; member?: { user?: User } } = {
       user: {
         id: testUserId,
         username: testUsername,
@@ -64,7 +65,7 @@ describe("slash command user resolution", () => {
   });
 
   it("should return undefined when both user sources are unavailable", () => {
-    const mockBrokenInteraction = {
+    const mockBrokenInteraction: { user?: User; member?: { user?: User } } = {
       user: undefined,
       member: undefined,
     };

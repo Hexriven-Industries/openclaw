@@ -1,0 +1,32 @@
+{
+  // Shared config across environments.
+  // Keep this file focused on stable defaults.
+  browser: {
+    ssrfPolicy: {
+      allowedHostnames: ["192.168.1.12", "192.168.1.42"],
+    },
+  },
+
+  channels: {
+    discord: {
+      execApprovals: {
+        enabled: true,
+        approvers: ["225674175312953344"],
+        target: "channel",
+        cleanupAfterResolve: true,
+      },
+    },
+  },
+
+  tools: {
+    allow: ["group:fs", "group:runtime", "group:sessions", "image"],
+    // Keep cron available for owner workflows.
+    deny: ["sessions_spawn", "gateway", "nodes", "browser", "canvas"],
+    exec: {
+      host: "gateway",
+      security: "allowlist",
+      ask: "on-miss",
+      safeBins: ["jq", "head", "tail", "wc"],
+    },
+  },
+}

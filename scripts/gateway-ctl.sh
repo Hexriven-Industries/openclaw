@@ -14,6 +14,7 @@ set -euo pipefail
 ENV="${1:-}"
 ACTION="${2:-}"
 GUI="gui/$(id -u)"
+PLUTIL_BIN="${PLUTIL_BIN:-/usr/bin/plutil}"
 
 case "$ENV" in
   prod)
@@ -21,18 +22,138 @@ case "$ENV" in
     PLIST="$HOME/Library/LaunchAgents/ai.openclaw.gateway.plist"
     PORT=18789
     DEPLOY_DIR="$HOME/Deployments/openclaw-prod"
+    EXPECTED_PROFILE="prod"
+    EXPECTED_CONFIG_PATH="$HOME/Deployments/openclaw-config/prod.json5"
+    EXPECTED_STATE_DIR="$HOME/.openclaw"
     ;;
   dev)
     LABEL="ai.openclaw.dev"
     PLIST="$HOME/Library/LaunchAgents/ai.openclaw.dev.plist"
     PORT=19001
     DEPLOY_DIR="$HOME/Deployments/openclaw-dev"
+    EXPECTED_PROFILE="dev"
+    EXPECTED_CONFIG_PATH="$HOME/Deployments/openclaw-config/dev.json5"
+    EXPECTED_STATE_DIR="$HOME/.openclaw-dev"
     ;;
   *)
     echo "Usage: gateway-ctl <prod|dev> <start|stop|status>"
     exit 1
     ;;
 esac
+
+require_explicit_profile_pin() {
+  case "$ACTION" in
+    start|stop|restart|tui) ;;
+    *) return 0 ;;
+  esac
+
+  local profile="${OPENCLAW_PROFILE:-}"
+  if [[ "$profile" != "$EXPECTED_PROFILE" ]]; then
+    echo "❌ Refusing $ENV $ACTION without explicit profile pinning."
+    echo "   Expected: OPENCLAW_PROFILE=$EXPECTED_PROFILE"
+    echo "   Example: OPENCLAW_PROFILE=$EXPECTED_PROFILE gateway-ctl $ENV $ACTION"
+    exit 1
+  fi
+}
+
+resolve_abs_path_no_fs() {
+  local input="$1"
+  local path_in="$input"
+  case "$path_in" in
+    "~")
+      path_in="$HOME"
+      ;;
+    "~/"*)
+      path_in="$HOME/${path_in#~/}"
+      ;;
+  esac
+  if [[ "$path_in" = /* ]]; then
+    printf "%s\n" "$path_in"
+  else
+    printf "%s\n" "$PWD/$path_in"
+  fi
+}
+
+plist_read_raw() {
+  local key="$1"
+  "$PLUTIL_BIN" -extract "$key" raw -o - "$PLIST" 2>/dev/null || true
+}
+
+plist_read_program_arg() {
+  local idx="$1"
+  plist_read_raw "ProgramArguments.$idx"
+}
+
+plist_extract_program_arg_value() {
+  local flag="$1"
+  local i arg next
+  for i in $(seq 0 32); do
+    arg="$(plist_read_program_arg "$i")"
+    [ -n "$arg" ] || break
+    if [[ "$arg" == "$flag" ]]; then
+      next="$(plist_read_program_arg "$((i + 1))")"
+      [ -n "$next" ] && printf "%s\n" "$next"
+      return 0
+    fi
+  done
+  return 1
+}
+
+verify_plist_binding() {
+  case "$ACTION" in
+    start|restart|tui) ;;
+    *) return 0 ;;
+  esac
+
+  if [ ! -f "$PLIST" ]; then
+    echo "❌ Missing plist: $PLIST"
+    echo "   Reinstall service using the $ENV runtime before retrying."
+    exit 1
+  fi
+
+  local actual_config actual_state actual_entry actual_port
+  actual_config="$(plist_read_raw EnvironmentVariables.OPENCLAW_CONFIG_PATH)"
+  actual_state="$(plist_read_raw EnvironmentVariables.OPENCLAW_STATE_DIR)"
+  actual_entry="$(plist_read_program_arg 1)"
+  actual_port="$(plist_extract_program_arg_value --port)"
+  if [ -z "$actual_port" ]; then
+    # Backward-compatible fallback for older layouts where the port may be positional.
+    actual_port="$(plist_read_program_arg 3)"
+    if [[ "$actual_port" == --* ]]; then
+      actual_port=""
+    fi
+  fi
+
+  local expected_config expected_state expected_entry
+  expected_config="$(resolve_abs_path_no_fs "$EXPECTED_CONFIG_PATH")"
+  expected_state="$(resolve_abs_path_no_fs "$EXPECTED_STATE_DIR")"
+  expected_entry="$(resolve_abs_path_no_fs "$DEPLOY_DIR/dist/index.js")"
+
+  local actual_config_abs actual_state_abs actual_entry_abs
+  actual_config_abs="$(resolve_abs_path_no_fs "$actual_config")"
+  actual_state_abs="$(resolve_abs_path_no_fs "$actual_state")"
+  actual_entry_abs="$(resolve_abs_path_no_fs "$actual_entry")"
+
+  if [[ "$actual_config_abs" != "$expected_config" ]] || \
+     [[ "$actual_state_abs" != "$expected_state" ]] || \
+     [[ "$actual_entry_abs" != "$expected_entry" ]] || \
+     [[ "$actual_port" != "$PORT" ]]; then
+    echo "❌ Refusing $ENV $ACTION due to service binding drift."
+    echo "   Expected config: $expected_config"
+    echo "   Actual config:   $actual_config_abs"
+    echo "   Expected state:  $expected_state"
+    echo "   Actual state:    $actual_state_abs"
+    echo "   Expected entry:  $expected_entry"
+    echo "   Actual entry:    $actual_entry_abs"
+    echo "   Expected port:   $PORT"
+    echo "   Actual port:     ${actual_port:-<missing>}"
+    echo "   Fix the LaunchAgent wiring before retrying."
+    exit 1
+  fi
+}
+
+require_explicit_profile_pin
+verify_plist_binding
 
 is_loaded() {
   launchctl print "$GUI/$LABEL" &>/dev/null
