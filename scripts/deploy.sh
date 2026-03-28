@@ -4,10 +4,12 @@
 # Base deploy script. Use the environment wrappers instead of calling directly:
 #   ./scripts/deploy-prod.sh              # Deploy to production
 #   ./scripts/deploy-dev.sh               # Deploy to development
+#   ./scripts/deploy-palace.sh            # Deploy to Palace
 #
 # Or call directly with --env:
 #   ./scripts/deploy.sh --env prod
 #   ./scripts/deploy.sh --env dev --skip-build --dry-run
+#   ./scripts/deploy.sh --env palace --skip-build --dry-run
 #
 # Flags:
 #   --env <name>     Environment to deploy to (required unless called via wrapper)
@@ -18,7 +20,9 @@
 #   --allow-drift    Allow LaunchAgent config-path/content drift from tracked config
 #
 # To deploy without restarting (e.g., staging for later activation):
+#   ./scripts/deploy-dev.sh --no-restart
 #   ./scripts/deploy-prod.sh --no-restart
+#   ./scripts/deploy-palace.sh --no-restart
 
 set -euo pipefail
 
@@ -38,23 +42,31 @@ resolve_env() {
       LAUNCHD_LABEL="ai.openclaw.dev"
       PLIST_FILE="$HOME/Library/LaunchAgents/ai.openclaw.dev.plist"
       ;;
+    palace)
+      DEPLOY_DIR="$HOME/Deployments/openclaw-palace"
+      ENV_LABEL="Palace"
+      LAUNCHD_LABEL="ai.openclaw.gateway"
+      PLIST_FILE="$HOME/Library/LaunchAgents/ai.openclaw.gateway.plist"
+      ;;
     *)
-      die "Unknown environment: $1 (known: prod, dev)"
+      die "Unknown environment: $1 (known: prod, dev, palace)"
       ;;
   esac
 }
 
 # ── Configuration ─────────────────────────────────────────────────────
 SOURCE_DIR="${OPENCLAW_SOURCE:-$HOME/Development/openclaw}"
-# Expected Dev config path for LaunchAgent verification.
-# Override if your dev config repo lives elsewhere.
+# Expected config paths for LaunchAgent verification/drift checks.
 DEV_EXPECTED_CONFIG_PATH="${OPENCLAW_DEV_CONFIG_PATH:-$HOME/Deployments/openclaw-config/dev.json5}"
 PROD_EXPECTED_CONFIG_PATH="${OPENCLAW_PROD_CONFIG_PATH:-$HOME/Deployments/openclaw-config/prod.json5}"
+PALACE_EXPECTED_CONFIG_PATH="${OPENCLAW_PALACE_CONFIG_PATH:-$HOME/Deployments/openclaw-config/palace.json5}"
 # Plutil binary path (override in tests/non-mac environments).
 PLUTIL_BIN="${PLUTIL_BIN:-/usr/bin/plutil}"
 
 # Runtime artifacts the gateway needs (and nothing else).
 # If upstream adds new runtime requirements, update this list.
+# In particular, deployed runtimes currently require docs/reference/templates
+# for workspace/bootstrap/reference fallback paths during inbound handling.
 # See: ~/.openclaw/workspace/scratch/runtime-requirements.md
 RUNTIME_DIRS=(
   dist/
@@ -62,6 +74,7 @@ RUNTIME_DIRS=(
   skills/
   assets/
   extensions/
+  docs/reference/templates/
 )
 RUNTIME_FILES=(
   package.json
@@ -84,7 +97,7 @@ for arg in "$@"; do
     --no-restart) RESTART=false ;;
     --allow-drift) ALLOW_DRIFT=true ;;
     --help|-h)
-      head -20 "$0" | tail -18
+      head -24 "$0" | tail -22
       exit 0
       ;;
     *)
@@ -211,7 +224,7 @@ Refusing to deploy with config drift. Re-run with --allow-drift to override."
 }
 
 # ── Resolve environment ──────────────────────────────────────────────
-[ -n "$ENV_NAME" ] || die "No environment specified. Use --env prod|dev or call via wrapper script."
+[ -n "$ENV_NAME" ] || die "No environment specified. Use --env prod|dev|palace or call via wrapper script."
 
 resolve_env "$ENV_NAME"
 
@@ -226,13 +239,20 @@ fi
 # Drift check: block deploy when runtime LaunchAgent config drifts from tracked
 # env config unless operator passes --allow-drift explicitly.
 if [ "$DRY_RUN" = false ]; then
-  if [ "$ENV_NAME" = "dev" ]; then
-    info "Checking dev config drift against tracked config..."
-    verify_config_drift "dev" "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
-  else
-    info "Checking prod config drift against tracked config..."
-    verify_config_drift "prod" "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
-  fi
+  case "$ENV_NAME" in
+    dev)
+      info "Checking dev config drift against tracked config..."
+      verify_config_drift "dev" "$PLIST_FILE" "$DEV_EXPECTED_CONFIG_PATH"
+      ;;
+    prod)
+      info "Checking prod config drift against tracked config..."
+      verify_config_drift "prod" "$PLIST_FILE" "$PROD_EXPECTED_CONFIG_PATH"
+      ;;
+    palace)
+      info "Checking palace config drift against tracked config..."
+      verify_config_drift "palace" "$PLIST_FILE" "$PALACE_EXPECTED_CONFIG_PATH"
+      ;;
+  esac
   echo ""
 fi
 
@@ -351,8 +371,8 @@ echo ""
 # ── Post-deploy verification ─────────────────────────────────────────
 if [ "$DRY_RUN" = false ]; then
   [ -f "$DEPLOY_DIR/dist/index.js" ]  || die "VERIFICATION FAILED: dist/index.js missing from deployment!"
-  [ -d "$DEPLOY_DIR/node_modules" ]    || die "VERIFICATION FAILED: node_modules/ missing from deployment!"
-  [ -f "$DEPLOY_DIR/package.json" ]    || die "VERIFICATION FAILED: package.json missing from deployment!"
+  [ -d "$DEPLOY_DIR/node_modules" ]   || die "VERIFICATION FAILED: node_modules/ missing from deployment!"
+  [ -f "$DEPLOY_DIR/package.json" ]   || die "VERIFICATION FAILED: package.json missing from deployment!"
 
   DEPLOY_SIZE=$(du -sh "$DEPLOY_DIR" 2>/dev/null | cut -f1)
   info "Deployment verified ✓ ($DEPLOY_SIZE)"
@@ -425,7 +445,7 @@ if [ "$RESTART" = true ] && [ "$DRY_RUN" = false ]; then
   echo "╚══════════════════════════════════════╝"
 else
   echo "╔══════════════════════════════════════╗"
-  echo "║   Deploy complete ($ENV_LABEL)"
+  echo "║   Deploy complete ($ENV_LABEL)       ║"
   echo "║                                      ║"
   echo "║   Restart the gateway to activate.   ║"
   echo "╚══════════════════════════════════════╝"
