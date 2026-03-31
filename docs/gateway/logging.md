@@ -61,6 +61,66 @@ console stream. This is **tools-only** and does not alter file logs.
   - Matches are masked by keeping the first 6 + last 4 chars (length >= 18), otherwise `***`.
   - Defaults cover common key assignments, CLI flags, JSON fields, bearer headers, PEM blocks, and popular token prefixes.
 
+## Tool-usage dataset logging (future training)
+
+If you want to build a durable tool-usage dataset for future function-calling model tuning, keep
+the existing gateway logs as ground truth and add a write-once dataset stream beside them.
+
+Recommended baseline:
+
+1. Set `logging.level` to `debug` (or `trace` if you need full call envelopes) in environments
+   where you are collecting data.
+2. Keep `logging.redactSensitive: "tools"` enabled for console output and apply stricter
+   redaction before exporting any dataset outside your own storage.
+3. Write one JSONL row per tool call lifecycle event:
+   - `tool.call.request`
+   - `tool.call.result`
+   - `tool.call.error`
+4. Include stable IDs so records can be joined later:
+   - session id
+   - turn id
+   - tool call id
+   - provider/model identifiers
+5. Include timing + outcomes for quality signals:
+   - start/end timestamps
+   - latency ms
+   - retries
+   - success/failure classification
+6. Store raw payloads and normalized summaries side-by-side:
+   - raw arguments/results (redacted)
+   - normalized argument keys, token counts, error category
+
+Suggested JSONL schema (example fields):
+
+```json
+{
+  "event": "tool.call.result",
+  "timestamp": "2026-02-21T07:00:00.000Z",
+  "sessionId": "sess_01J...",
+  "turnId": "turn_01J...",
+  "toolCallId": "tc_01J...",
+  "toolName": "exec_command",
+  "provider": "functiongemma",
+  "model": "functiongemma-xxl",
+  "attempt": 1,
+  "durationMs": 184,
+  "ok": true,
+  "args": { "cmd": "openclaw channels status --probe" },
+  "result": { "exitCode": 0 },
+  "error": null,
+  "labels": ["channel-health", "prod"],
+  "privacy": { "redactionProfile": "default-v1" }
+}
+```
+
+Operational guidance:
+
+- Use date-partitioned files (`YYYY/MM/DD/*.jsonl`) to simplify backfills and retention policies.
+- Compress older partitions (`.jsonl.zst`) to keep storage costs low while preserving raw data.
+- Keep a schema version field (`schemaVersion`) so training pipelines can evolve safely.
+- Never record unredacted secrets, auth headers, phone numbers, or message bodies containing
+  private user data.
+
 ## Gateway WebSocket logs
 
 The gateway prints WebSocket protocol logs in two modes:
